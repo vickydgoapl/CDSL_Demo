@@ -1,0 +1,121 @@
+# dr_playbook.yml
+---
+- name: Stage 1 – Protect  (Primary site)
+  hosts: primary
+  become: yes
+  vars:
+    backup_root: /var/backups/dr
+    ts: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+    db_name: myapp
+    dump_file: "{{ backup_root }}/{{ db_name }}_{{ ts }}.sql.gz"
+    data_archive: "{{ backup_root }}/data_{{ ts }}.tgz"
+  tasks:
+    - name: Ensure backup directory exists
+      ansible.builtin.file:
+        path: "{{ backup_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Dump and compress the database (PostgreSQL example)
+      community.postgresql.postgresql_db:
+        name: "{{ db_name }}"
+        state: dump
+        target: "{{ dump_file }}"
+        compress: yes
+      tags: [backup, database]
+
+    - name: Tar application data
+      ansible.builtin.archive:
+        path: /var/www/myapp
+        dest: "{{ data_archive }}"
+        format: gz
+      tags: [backup, files]
+
+    - name: Verify backup artifacts were created
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ dump_file }}"
+        - "{{ data_archive }}"
+      register: backup_stats
+      failed_when: "'False' in backup_stats.results | map(attribute='stat.exists') | list"
+
+    - name: Trigger transfer to DR site
+      ansible.builtin.set_fact:
+        backup_package: "{{ [dump_file, data_archive] }}"
+
+- name: Stage 2 – Transfer  (Primary ➜ DR host)
+  hosts: dr
+  become: yes
+  vars:
+    incoming_dir: /srv/dr_incoming
+  tasks:
+    - name: Make sure incoming directory exists
+      ansible.builtin.file:
+        path: "{{ incoming_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Synchronize backup artifacts from primary
+      ansible.posix.synchronize:
+        src: "{{ item }}"
+        dest: "{{ incoming_dir }}/"
+        mode: push
+        checksum: yes
+      delegate_to: "{{ groups['primary'][0] }}"
+      loop: "{{ hostvars[groups['primary'][0]].backup_package }}"
+      tags: [transfer]
+
+- name: Stage 3 – Recover  (Run **only** when `dr_action: failover`)
+  hosts: dr
+  become: yes
+  vars:
+    dr_action: "{{ dr_action | default('standby') }}"
+    incoming_dir: /srv/dr_incoming
+    restore_root: /srv/dr_restore
+  tasks:
+    - name: Skip restoration unless a fail-over has been declared
+      ansible.builtin.meta: end_play
+      when: dr_action != 'failover'
+
+    - name: Create restore directory
+      ansible.builtin.file:
+        path: "{{ restore_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Extract application data
+      ansible.builtin.unarchive:
+        src: "{{ incoming_dir }}/{{ lookup('first_found', patterns='data_*.tgz', paths=[incoming_dir]) }}"
+        dest: "{{ restore_root }}"
+        remote_src: yes
+      tags: [restore, files]
+
+    - name: Restore PostgreSQL dump
+      community.postgresql.postgresql_db:
+        name: "{{ db_name }}"
+        state: restore
+        target: "{{ incoming_dir }}/{{ lookup('first_found', patterns=db_name + '_*.sql.gz', paths=[incoming_dir]) }}"
+      tags: [restore, database]
+
+    - name: Start application services
+      ansible.builtin.systemd:
+        name: myapp
+        state: started
+      tags: [restore, services]
+
+    - name: Confirm application is reachable
+      ansible.builtin.uri:
+        url: http://localhost/health
+        status_code: 200
+        register: healthcheck
+        retries: 5
+        delay: 10
+        until: healthcheck.status == 200
+      tags: [validate]
