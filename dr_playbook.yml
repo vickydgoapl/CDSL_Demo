@@ -13,7 +13,7 @@
     backup_root: /var/backups/dr
     ts: "{{ '%Y%m%d%H%M%S' | strftime }}"
     db_name: sample_db
-    db_user: postgres        # adjust as needed
+    db_user: admin        # adjust as needed
     # Ensure db_password is provided securely, e.g., via Ansible Vault
     # or as an extra var (--extra-vars "db_password=your_secret_password")
     # db_password: "your_secret_password" # This line should be vaulted or passed via extra vars
