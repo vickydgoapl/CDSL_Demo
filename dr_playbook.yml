@@ -110,22 +110,20 @@
       ansible.builtin.fetch:
         src: "{{ item }}"
         dest: "{{ control_node_fetch_dir }}"
-        flat: true # Ensures files are copied directly into dest, not into host-specific subdirectories.
-                   # E.g., /tmp/ansible_dr_fetched_backups/myapp_2025...sql.gz
+        flat: true
       loop: "{{ primary_backup_package }}"
-      register: fetched_results # Register output to reconstruct paths on control node
+      register: fetched_results
 
     - name: Register fetched artifact paths on control node
       ansible.builtin.set_fact:
-        control_node_backup_package: |
-          {% set fetched_paths = [] %}
-          {% for result in fetched_results.results %}
-            {% if result.dest is defined %}
-              {% set _ = fetched_paths.append(result.dest) %}
-            {% endif %}
-          {% endfor %}
-          {{ fetched_paths }}
+        # --- FIX: Use map filter to correctly extract 'dest' paths ---
+        control_node_backup_package: "{{ fetched_results.results | map(attribute='dest') | list }}"
+        # --- End FIX ---
       tags: always
+
+    - name: DEBUG - Show control_node_backup_package
+      ansible.builtin.debug:
+        var: control_node_backup_package
 
 ###############################################################################
 # PLAY 2 – TRANSFER  (Control Node ➜ DR host)  ➜  copy artifacts off-site
