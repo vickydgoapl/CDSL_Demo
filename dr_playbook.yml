@@ -12,7 +12,7 @@
   vars:
     backup_root: /var/backups/dr
     ts: "{{ '%Y%m%d%H%M%S' | strftime }}"
-    db_name: myapp
+    db_name: sample_db
     db_user: postgres        # adjust as needed
     # Ensure db_password is provided securely, e.g., via Ansible Vault
     # or as an extra var (--extra-vars "db_password=your_secret_password")
@@ -36,7 +36,7 @@
         # PGPASSWORD should be provided securely (e.g., via Ansible Vault)
         # Using lookup('ansible.builtin.var', 'db_password') implies db_password
         # is available in vars, inventory, or as an extra var.
-        PGPASSWORD: "{{ lookup('ansible.builtin.var', 'db_password', default='') }}"
+        PGPASSWORD: ""
       changed_when: true
       tags: [backup, database]
 
@@ -44,7 +44,7 @@
     # Replaces the former ansible.builtin.archive (non-certified for this context)
     - name: Create tarball of application data
       ansible.builtin.command: >
-        tar --create --gzip --file {{ data_archive }} -C /var/www/myapp .
+        tar --create --gzip --file {{ data_archive }} -C /var/www/sample_db .
       args:
         creates: "{{ data_archive }}"        # makes task idempotent
       changed_when: true
