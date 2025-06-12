@@ -43,6 +43,10 @@
       changed_when: true
       tags: [backup, files]
 
+    - name: Wait 15 seconds for artifacts to settle on disk
+      ansible.builtin.pause:
+        seconds: 15
+
     - name: Verify backup artifacts exist
       ansible.builtin.stat:
         path: "{{ item }}"
