@@ -223,33 +223,3 @@
         state: started
         enabled: true
       tags: [restore, services]
-
-    - name: Check application health endpoint (Workaround for older Ansible versions)
-      ansible.builtin.shell: |
-        #!/bin/bash
-        # Define retry parameters
-        RETRIES=5
-        DELAY=10 # seconds
-        URL="http://localhost/health"
-        EXPECTED_STATUS_CODE=200
-
-        # Loop through retries
-        for i in $(seq 1 $RETRIES); do
-          echo "Attempt $i/$RETRIES: Checking health endpoint at $URL..."
-          # Use curl to get HTTP status code, suppress output, and capture status
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
-
-          if [ "$HTTP_STATUS" -eq "$EXPECTED_STATUS_CODE" ]; then
-            echo "Health endpoint returned $EXPECTED_STATUS_CODE. Application is healthy."
-            exit 0 # Success, exit the shell script with 0 (Ansible success)
-          else
-            echo "Health endpoint returned $HTTP_STATUS (expected $EXPECTED_STATUS_CODE). Retrying in $DELAY seconds..."
-            sleep $DELAY # Wait before next retry
-          fi
-        done
-
-        # If loop finishes without success, exit with 1 (Ansible failure)
-        echo "Failed to get $EXPECTED_STATUS_CODE from health endpoint after $RETRIES attempts."
-        exit 1
-      changed_when: false # This task performs a check, it doesn't change anything
-      tags: [validate]
