@@ -26,7 +26,7 @@
     # 3. In your inventory.ini under [all:vars] (LESS SECURE for production):
     #    db_password='your_actual_db_password'
     # -------------------------------------------------------------------------
-    db_password: "{{ lookup('ansible.builtin.var', 'db_password', default='') }}"
+    db_password: "pass@123"
 
     dump_file: "{{ backup_root }}/{{ db_name }}_{{ current_timestamp }}.sql.gz"
     data_archive: "{{ backup_root }}/data_{{ current_timestamp }}.tgz"
