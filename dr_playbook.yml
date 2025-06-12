@@ -1,84 +1,113 @@
-# dr_playbook.yml
+# dr_rh_certified.yml
+# Sample DR workflow that relies exclusively on Red Hat-supported content
 ---
-- name: Stage 1 – Protect  (Primary site)
+###############################################################################
+#  PLAY 1 – PROTECT:  create application + DB backups on the primary site
+###############################################################################
+- name: Stage 1 – Protect (Primary site)
   hosts: primary
   become: yes
   vars:
     backup_root: /var/backups/dr
-    ts: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+    ts: "{{ '%Y%m%d%H%M%S' | strftime }}"
     db_name: myapp
+    db_user: postgres           # adjust as required
     dump_file: "{{ backup_root }}/{{ db_name }}_{{ ts }}.sql.gz"
     data_archive: "{{ backup_root }}/data_{{ ts }}.tgz"
+
   tasks:
     - name: Ensure backup directory exists
       ansible.builtin.file:
         path: "{{ backup_root }}"
         state: directory
-        owner: root
-        group: root
         mode: "0750"
 
-    - name: Dump and compress the database (PostgreSQL example)
-      community.postgresql.postgresql_db:
-        name: "{{ db_name }}"
-        state: dump
-        target: "{{ dump_file }}"
-        compress: yes
+    # ──────────────────────────────────────────────────────────────
+    # PostgreSQL dump without community collections:
+    # Use the RHEL System Role to be sure the DB is reachable, then
+    # issue pg_dump via the built-in command module.
+    # ──────────────────────────────────────────────────────────────
+    - name: Include the certified PostgreSQL system role (optional)
+      ansible.builtin.include_role:
+        name: redhat.rhel_system_roles.postgresql
+      vars:
+        postgresql_owner: "{{ db_user }}"
+      tags: always
+
+    - name: Dump + compress the database with pg_dump
+      ansible.builtin.command: >
+        pg_dump -U {{ db_user }} {{ db_name }} | gzip -9 -c > {{ dump_file }}
+      environment:
+        PGPASSWORD: "{{ lookup('ansible.builtin.var', 'db_password') | default('', true) }}"
+      changed_when: true
       tags: [backup, database]
 
-    - name: Tar application data
+    - name: Archive application data
       ansible.builtin.archive:
         path: /var/www/myapp
         dest: "{{ data_archive }}"
         format: gz
       tags: [backup, files]
 
-    - name: Verify backup artifacts were created
+    - name: Verify both backup artifacts exist
       ansible.builtin.stat:
         path: "{{ item }}"
       loop:
         - "{{ dump_file }}"
         - "{{ data_archive }}"
-      register: backup_stats
-      failed_when: "'False' in backup_stats.results | map(attribute='stat.exists') | list"
+      register: art_stats
 
-    - name: Trigger transfer to DR site
+    - name: Fail if any artifact missing
+      ansible.builtin.assert:
+        that: "item.stat.exists"
+        fail_msg: "Backup artifact {{ item.stat.path }} is missing!"
+      loop: "{{ art_stats.results }}"
+
+    - name: Register list of artifacts for later plays
       ansible.builtin.set_fact:
         backup_package: "{{ [dump_file, data_archive] }}"
+      tags: always
 
-- name: Stage 2 – Transfer  (Primary ➜ DR host)
-  hosts: dr
+###############################################################################
+#  PLAY 2 – TRANSFER: copy backup artifacts to DR host
+###############################################################################
+- name: Stage 2 – Transfer (Primary ➜ DR)
+  hosts: primary
   become: yes
   vars:
-    incoming_dir: /srv/dr_incoming
-  tasks:
-    - name: Make sure incoming directory exists
-      ansible.builtin.file:
-        path: "{{ incoming_dir }}"
-        state: directory
-        owner: root
-        group: root
-        mode: "0750"
+    dr_host: "{{ groups['dr'][0] }}"
+    dr_incoming: /srv/dr_incoming
 
-    - name: Synchronize backup artifacts from primary
-      ansible.posix.synchronize:
-        src: "{{ item }}"
-        dest: "{{ incoming_dir }}/"
-        mode: push
-        checksum: yes
-      delegate_to: "{{ groups['primary'][0] }}"
-      loop: "{{ hostvars[groups['primary'][0]].backup_package }}"
+  tasks:
+    - name: Ensure incoming directory exists on DR host
+      ansible.builtin.file:
+        path: "{{ dr_incoming }}"
+        state: directory
+        mode: "0750"
+      delegate_to: "{{ dr_host }}"
+
+    - name: Secure-copy artifacts to DR host  (built-in shell → scp)
+      ansible.builtin.shell: |
+        scp -o StrictHostKeyChecking=no {{ item }} {{ dr_host }}:{{ dr_incoming }}/
+      loop: "{{ hostvars[inventory_hostname].backup_package }}"
+      changed_when: true
       tags: [transfer]
 
-- name: Stage 3 – Recover  (Run **only** when `dr_action is failover`)
+###############################################################################
+#  PLAY 3 – RECOVER: restore service at DR site (conditional)
+###############################################################################
+- name: Stage 3 – Recover (only when dr_action=failover)
   hosts: dr
   become: yes
   vars:
     dr_action: "{{ dr_action | default('standby') }}"
     incoming_dir: /srv/dr_incoming
     restore_root: /srv/dr_restore
+    db_name: myapp
+    db_user: postgres
+
   tasks:
-    - name: Skip restoration unless a fail-over has been declared
+    - name: Skip play unless fail-over requested
       ansible.builtin.meta: end_play
       when: dr_action != 'failover'
 
@@ -86,36 +115,52 @@
       ansible.builtin.file:
         path: "{{ restore_root }}"
         state: directory
-        owner: root
-        group: root
         mode: "0750"
 
-    - name: Extract application data
+    - name: Find latest data archive
+      ansible.builtin.find:
+        paths: "{{ incoming_dir }}"
+        patterns: "data_*.tgz"
+        recurse: no
+        age_stamp: mtime
+      register: data_archives
+
+    - name: Extract latest data archive
       ansible.builtin.unarchive:
-        src: "{{ incoming_dir }}/{{ lookup('first_found', patterns='data_*.tgz', paths=[incoming_dir]) }}"
+        src: "{{ data_archives.files | sort(attribute='mtime') | last | default('') }}"
         dest: "{{ restore_root }}"
         remote_src: yes
+      when: data_archives.matched > 0
       tags: [restore, files]
 
-    - name: Restore PostgreSQL dump
-      community.postgresql.postgresql_db:
-        name: "{{ db_name }}"
-        state: restore
-        target: "{{ incoming_dir }}/{{ lookup('first_found', patterns=db_name + '_*.sql.gz', paths=[incoming_dir]) }}"
+    - name: Find latest DB dump
+      ansible.builtin.find:
+        paths: "{{ incoming_dir }}"
+        patterns: "{{ db_name }}_*.sql.gz"
+      register: db_dumps
+
+    - name: Restore PostgreSQL dump (command, no community collection)
+      ansible.builtin.command: >
+        bash -c 'gunzip -c "{{ (db_dumps.files | sort(attribute="mtime") | last).path }}" |
+                 psql -U {{ db_user }} {{ db_name }}'
+      environment:
+        PGPASSWORD: "{{ lookup('ansible.builtin.var', 'db_password') | default('', true) }}"
+      when: db_dumps.matched > 0
+      changed_when: true
       tags: [restore, database]
 
-    - name: Start application services
+    - name: Start application service
       ansible.builtin.systemd:
         name: myapp
         state: started
       tags: [restore, services]
 
-    - name: Confirm application is reachable
+    - name: Check application health
       ansible.builtin.uri:
         url: http://localhost/health
         status_code: 200
-        register: healthcheck
         retries: 5
         delay: 10
-        until: healthcheck.status == 200
+        register: health
+        until: health.status == 200
       tags: [validate]
