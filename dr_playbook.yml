@@ -8,7 +8,6 @@
 ###############################################################################
 - name: Stage 1 – Protect (Primary site)
   hosts: primary
-  become: true
   vars:
     backup_root: /var/backups/dr
     ts: "{{ '%Y%m%d%H%M%S' | strftime }}"
