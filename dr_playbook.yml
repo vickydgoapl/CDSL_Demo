@@ -10,59 +10,40 @@
   hosts: primary
   become: true # Connects as ansibleuser, then uses sudo for root privileges on primary-server
   vars:
-    # Use ansible_date_time for a more robust timestamp, available on all hosts
-    # and ensures consistency across different Ansible versions/environments.
     current_timestamp: "{{ '%Y%m%d%H%M%S' | strftime }}"
     db_name: myapp
     db_user: postgres
-    # -------------------------------------------------------------------------
-    # IMPORTANT: Define 'db_password' securely.
-    # Recommended ways:
-    # 1. Ansible Vault: Encrypt a file (e.g., group_vars/all/vault.yml)
-    #    containing: db_password: "your_actual_db_password"
-    #    Then run playbook with 'ansible-playbook --ask-vault-pass ...'
-    # 2. As an --extra-vars command-line argument (LESS SECURE for production):
-    #    ansible-playbook ... --extra-vars "db_password=your_actual_db_password"
-    # 3. In your inventory.ini under [all:vars] (LESS SECURE for production):
-    #    db_password='your_actual_db_password'
-    # -------------------------------------------------------------------------
     db_password: "pass@123"
-
     dump_file: "{{ backup_root }}/{{ db_name }}_{{ current_timestamp }}.sql.gz"
     data_archive: "{{ backup_root }}/data_{{ current_timestamp }}.tgz"
     backup_root: /var/backups/dr
-    app_data_path: /var/www/myapp # Centralize common application data path
+    app_data_path: /var/www/myapp
+    control_node_fetch_dir: "/tmp/ansible_dr_fetched_backups" # Directory on the Ansible Control Node
 
   tasks:
-    - name: Ensure backup directory exists
+    - name: Ensure backup directory exists on primary
       ansible.builtin.file:
         path: "{{ backup_root }}"
         state: directory
         mode: "0750"
 
     - name: Dump and compress PostgreSQL database
-      # Using 'command' module for flexibility with piping and compression.
-      # Requires pg_dump and gzip to be installed on the primary-server.
       ansible.builtin.shell: >
         pg_dump -U {{ db_user }} {{ db_name }} | gzip -9 -c > {{ dump_file }}
       environment:
-        # PGPASSWORD is crucial for database authentication.
         PGPASSWORD: "{{ db_password }}"
-      changed_when: true # Always report a change for dump operations
+      changed_when: true
       tags: [backup, database]
 
     - name: Create tarball of application data
-      # Using 'command' module with 'tar' for compatibility and direct control.
-      # 'creates' argument ensures idempotency: task runs only if file doesn't exist.
       ansible.builtin.shell: >
         tar --create --gzip --file {{ data_archive }} -C {{ app_data_path }} .
       args:
         creates: "{{ data_archive }}"
-      changed_when: true # Always report a change for archive operations
+      changed_when: true
       tags: [backup, files]
 
     - name: Verify backup artifacts exist
-      # Check if the created backup files actually exist on the primary-server.
       ansible.builtin.stat:
         path: "{{ item }}"
       loop:
@@ -71,48 +52,71 @@
       register: art_stats
 
     - name: Fail if any artifact is missing
-      # Assert that all backup files were successfully created.
       ansible.builtin.assert:
         that: "item.stat.exists"
         fail_msg: "Backup artifact {{ item.stat.path }} is missing!"
       loop: "{{ art_stats.results }}"
 
-    - name: Register artifacts for transfer
-      # This registers the list of generated backup files for subsequent plays
-      # to ensure the correct paths are used for transfer.
+    - name: Register artifacts for fetch (primary paths)
+      # Store the paths of the created backups on the primary server.
       ansible.builtin.set_fact:
-        backup_package: "{{ [dump_file, data_archive] }}"
-      tags: always # Always run this task to ensure 'backup_package' is set
+        primary_backup_package: "{{ [dump_file, data_archive] }}"
+      tags: always
+
+    - name: Fetch backup artifacts from primary to control node
+      # Pulls the backup files from the primary-server to the Ansible Control Node.
+      ansible.builtin.fetch:
+        src: "{{ item }}"
+        dest: "{{ control_node_fetch_dir }}"
+        flat: true # Ensures files are copied directly into dest, not into host-specific subdirectories.
+                   # E.g., /tmp/ansible_dr_fetched_backups/myapp_2025...sql.gz
+      loop: "{{ primary_backup_package }}"
+      register: fetched_results # Register output to reconstruct paths on control node
+
+    - name: Register fetched artifact paths on control node
+      # This task processes the output of 'fetch' to create a list of paths
+      # on the control node where the backups are now stored.
+      ansible.builtin.set_fact:
+        control_node_backup_package: |
+          {% set fetched_paths = [] %}
+          {% for result in fetched_results.results %}
+            {% if result.dest is defined %}
+              {% set _ = fetched_paths.append(result.dest) %}
+            {% endif %}
+          {% endfor %}
+          {{ fetched_paths }}
+      tags: always
 
 ###############################################################################
-# PLAY 2 – TRANSFER  (primary ➜ DR host)  ➜  copy artifacts off-site
+# PLAY 2 – TRANSFER  (Control Node ➜ DR host)  ➜  copy artifacts off-site
 ###############################################################################
-- name: Stage 2 – Transfer (Primary ➜ DR)
-  hosts: primary
-  become: true # Connects as ansibleuser, then uses sudo for root privileges on primary-server
+- name: Stage 2 – Transfer (Control Node ➜ DR)
+  hosts: dr # This play directly targets the DR host.
+  become: true # Connects as ansibleuser, then uses sudo for root privileges on dr-server
   vars:
-    # dr_host will be the first host defined in the 'dr' group of your inventory.
-    dr_host: "{{ groups['dr'][0] }}"
-    dr_incoming: /srv/dr_incoming # Directory on DR host for incoming backups
+    dr_incoming: /srv/dr_incoming
 
   tasks:
     - name: Ensure incoming directory exists on DR host
-      # This task is delegated to the DR host, ensuring the directory exists there.
+      # This task now runs directly on the DR host.
       ansible.builtin.file:
         path: "{{ dr_incoming }}"
         state: directory
         mode: "0750"
-      delegate_to: "{{ dr_host }}"
 
-    - name: Copy backup artifacts to DR host (scp)
-      # This task runs on the primary-server and uses 'scp' to transfer files
-      # directly from primary-server to dr-server.
-      # Requires passwordless SSH from 'root@primary-server' to 'root@dr-server'.
-      # (Set up in the 'setup_primary_server.sh' script and manual steps.)
-      ansible.builtin.shell: |
-        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {{ item }} {{ dr_host }}:{{ dr_incoming }}/
-      loop: "{{ hostvars[inventory_hostname].backup_package }}"
-      changed_when: true # Indicate a change as scp doesn't natively report idempotency
+    - name: Copy backup artifacts from control node to DR host
+      # Copies the files that were fetched to the control node (from primary)
+      # and pushes them to the DR host.
+      # The 'src' path refers to the control node's filesystem.
+      # The 'dest' path refers to the DR host's filesystem.
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "{{ dr_incoming }}/"
+        mode: preserve # Preserves original file permissions
+      # Access the 'control_node_backup_package' fact.
+      # This fact was registered on the 'primary-server' host (or associated with it in Ansible's memory).
+      # Since we only have one 'primary-server' in the 'primary' group, we can access its facts directly.
+      loop: "{{ hostvars[groups['primary'][0]].control_node_backup_package }}"
       tags: [transfer]
 
 ###############################################################################
@@ -120,20 +124,17 @@
 ###############################################################################
 - name: Stage 3 – Recover (only when dr_action=failover)
   hosts: dr
-  become: true # Connects as ansibleuser, then uses sudo for root privileges on dr-server
+  become: true
   vars:
-    # 'dr_action' controls if recovery proceeds. Default to 'standby' (no failover).
-    # To run recovery, pass --extra-vars "dr_action=failover" to ansible-playbook.
     dr_action: "{{ dr_action | default('standby') }}"
-    incoming_dir: /srv/dr_incoming # Directory on DR host where backups were transferred
-    restore_root: /srv/dr_restore # Directory on DR host for restored application data
+    incoming_dir: /srv/dr_incoming
+    restore_root: /srv/dr_restore
     db_name: myapp
     db_user: postgres
-    # db_password will be retrieved from the same source as in Play 1.
+    db_password: "{{ lookup('ansible.builtin.var', 'db_password', default='') }}"
 
   tasks:
     - name: Skip unless fail-over requested
-      # Use meta: end_play to stop further tasks in this play if 'dr_action' is not 'failover'.
       ansible.builtin.meta: end_play
       when: dr_action != 'failover'
 
@@ -144,25 +145,22 @@
         mode: "0750"
 
     - name: Find latest data archive
-      # Locates the most recently modified tarball in the incoming directory.
       ansible.builtin.find:
         paths: "{{ incoming_dir }}"
         patterns: "data_*.tgz"
         recurse: no
-        age_stamp: mtime # Find the latest based on modification time
+        age_stamp: mtime
       register: data_archives
 
     - name: Extract latest data archive
-      # Extracts the found data archive to the restore directory.
       ansible.builtin.unarchive:
         src: "{{ (data_archives.files | sort(attribute='mtime', reverse=true) | first).path }}"
         dest: "{{ restore_root }}"
         remote_src: true # Source file is on the remote (DR) host
-      when: data_archives.matched > 0 # Only attempt extraction if an archive was found
+      when: data_archives.matched > 0
       tags: [restore, files]
 
     - name: Find latest DB dump
-      # Locates the most recently modified database dump in the incoming directory.
       ansible.builtin.find:
         paths: "{{ incoming_dir }}"
         patterns: "{{ db_name }}_*.sql.gz"
@@ -170,19 +168,16 @@
       register: db_dumps
 
     - name: Restore PostgreSQL dump
-      # Restores the database using gunzip and psql.
-      # Requires psql, gunzip to be installed on the dr-server.
       ansible.builtin.shell: >
         bash -c 'gunzip -c "{{ (db_dumps.files | sort(attribute="mtime", reverse=true) | first).path }}" |
                   psql -U {{ db_user }} {{ db_name }}'
       environment:
         PGPASSWORD: "{{ db_password }}"
-      when: db_dumps.matched > 0 # Only attempt restore if a dump was found
-      changed_when: true # Indicate a change as it's a restore operation
+      when: db_dumps.matched > 0
+      changed_when: true
       tags: [restore, database]
 
     - name: Start application service
-      # Ensures the 'myapp' systemd service is started and enabled to run on boot.
       ansible.builtin.systemd:
         name: myapp
         state: started
@@ -190,12 +185,11 @@
       tags: [restore, services]
 
     - name: Check application health endpoint
-      # Waits for the application to become healthy by checking its HTTP endpoint.
       ansible.builtin.uri:
         url: http://localhost/health
         status_code: 200
-        retries: 5 # Retry 5 times
-        delay: 10 # Wait 10 seconds between retries
+        retries: 5
+        delay: 10
         register: health_check
-        until: health_check.status == 200 # Continue until status code 200 is received
+        until: health_check.status == 200
       tags: [validate]
