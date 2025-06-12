@@ -54,7 +54,8 @@
     - name: Fail if any artifact is missing
       ansible.builtin.assert:
         that: "item.stat.exists"
-        fail_msg: "Backup artifact {{ item.stat.path }} is missing!"
+        # FIX: Changed 'item.stat.path' to 'item.item' to reference the original path string.
+        fail_msg: "Backup artifact {{ item.item }} is missing!"
       loop: "{{ art_stats.results }}"
 
     - name: Register artifacts for fetch (primary paths)
