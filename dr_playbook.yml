@@ -25,14 +25,6 @@
         state: directory
         mode: "0750"
 
-    #—► (Optional) certify that PostgreSQL service is present & running
-    - name: Include certified PostgreSQL system role
-      ansible.builtin.include_role:
-        name: redhat.rhel_system_roles.postgresql
-      vars:
-        postgresql_owner: "{{ db_user }}"
-      tags: always
-
     # Dump + compress the database
     - name: Dump and compress PostgreSQL database
       ansible.builtin.command: >
