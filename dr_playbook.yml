@@ -8,6 +8,7 @@
 ###############################################################################
 - name: Stage 1 – Protect (Primary site)
   hosts: primary
+  become: true
   vars:
     backup_root: /var/backups/dr
     ts: "{{ '%Y%m%d%H%M%S' | strftime }}"
@@ -29,7 +30,7 @@
 
     # Dump + compress the database
     - name: Dump and compress PostgreSQL database
-      ansible.builtin.command: "pg_dump -Fc -f {{ dump_file }} -U {{ db_user }} {{ db_name }}"
+      ansible.builtin.command: "sudo -u {{ db_user }} pg_dump -Fc -f {{ dump_file }} -U {{ db_user }} {{ db_name }}"
       environment:
         # PGPASSWORD should be provided securely (e.g., via Ansible Vault)
         # Using lookup('ansible.builtin.var', 'db_password') implies db_password
