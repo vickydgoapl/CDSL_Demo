@@ -70,7 +70,7 @@
       loop: "{{ hostvars[groups['primary'][0]].backup_package }}"
       tags: [transfer]
 
-- name: Stage 3 – Recover  (Run **only** when `dr_action: failover`)
+- name: Stage 3 – Recover  (Run **only** when `dr_action is failover`)
   hosts: dr
   become: yes
   vars:
