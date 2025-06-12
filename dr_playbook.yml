@@ -10,15 +10,14 @@
   hosts: primary
   become: true # Connects as ansibleuser, then uses sudo for root privileges on primary-server
   vars:
-    current_timestamp: "{{ '%Y%m%d%H%M%S' | strftime }}"
+    # Removed current_timestamp variable here.
+    # Filenames will now be generated dynamically on the remote host.
     db_name: myapp
     db_user: postgres
     db_password: "pass@123"
-    dump_file: "{{ backup_root }}/{{ db_name }}_{{ current_timestamp }}.sql.gz"
-    data_archive: "{{ backup_root }}/data_{{ current_timestamp }}.tgz"
     backup_root: /var/backups/dr
     app_data_path: /var/www/myapp
-    control_node_fetch_dir: "/tmp/ansible_dr_fetched_backups" # Directory on the Ansible Control Node
+    control_node_fetch_dir: "/tmp/ansible_dr_fetched_backups"
 
   tasks:
     - name: Ensure backup directory exists on primary
@@ -28,18 +27,18 @@
         mode: "0750"
 
     - name: Dump and compress PostgreSQL database
+      # Use $(date +%Y%m%d%H%M%S) directly in the shell command for the remote host's timestamp
       ansible.builtin.shell: >
-        pg_dump -U {{ db_user }} {{ db_name }} | gzip -9 -c > {{ dump_file }}
+        pg_dump -U {{ db_user }} {{ db_name }} | gzip -9 -c > {{ backup_root }}/{{ db_name }}_$(date +%Y%m%d%H%M%S).sql.gz
       environment:
         PGPASSWORD: "{{ db_password }}"
       changed_when: true
       tags: [backup, database]
 
     - name: Create tarball of application data
+      # Use $(date +%Y%m%d%H%M%S) directly in the shell command for the remote host's timestamp
       ansible.builtin.shell: >
-        tar --create --gzip --file {{ data_archive }} -C {{ app_data_path }} .
-      args:
-        creates: "{{ data_archive }}"
+        tar --create --gzip --file {{ backup_root }}/data_$(date +%Y%m%d%H%M%S).tgz -C {{ app_data_path }} .
       changed_when: true
       tags: [backup, files]
 
@@ -47,45 +46,59 @@
       ansible.builtin.pause:
         seconds: 15
 
-    - name: Verify backup artifacts exist
-      ansible.builtin.stat:
-        path: "{{ item }}"
-      loop:
-        - "{{ dump_file }}"
-        - "{{ data_archive }}"
-      register: art_stats
+    - name: Find the latest created DB dump file
+      ansible.builtin.find:
+        paths: "{{ backup_root }}"
+        patterns: "{{ db_name }}_*.sql.gz"
+        # Sort by modification time to get the most recent one.
+        # find's 'sortby: mtime' is ascending by default, so the newest is 'last'.
+        file_type: file
+      register: latest_db_dump
 
-    - name: DEBUG - Show results of stat for artifacts
+    - name: Find the latest created data archive file
+      ansible.builtin.find:
+        paths: "{{ backup_root }}"
+        patterns: "data_*.tgz"
+        sortby: mtime
+        file_type: file
+      register: latest_data_archive
+
+    - name: DEBUG - Show discovered artifact paths
       ansible.builtin.debug:
-        var: art_stats
-        # You can also use 'msg' for more direct output
-        # msg: "Stat results: {{ art_stats }}"
+        msg:
+          - "Discovered DB Dump Path: {{ (latest_db_dump.files | last).path | default('Not found') }}"
+          - "Discovered Data Archive Path: {{ (latest_data_archive.files | last).path | default('Not found') }}"
 
-    - name: Fail if any artifact is missing
+    - name: Fail if latest DB dump was not found
       ansible.builtin.assert:
-        that: "item.stat.exists"
-        fail_msg: "Backup artifact {{ item.item }} is missing!" # Ensure this line is updated to item.item
-      loop: "{{ art_stats.results }}"
+        that:
+          - latest_db_dump.matched > 0
+          - (latest_db_dump.files | last).path is defined # Ensure path exists in the discovered file object
+        fail_msg: "No recent DB dump found matching pattern {{ db_name }}_*.sql.gz in {{ backup_root }}"
+
+    - name: Fail if latest data archive was not found
+      ansible.builtin.assert:
+        that:
+          - latest_data_archive.matched > 0
+          - (latest_data_archive.files | last).path is defined # Ensure path exists in the discovered file object
+        fail_msg: "No recent data archive found matching pattern data_*.tgz in {{ backup_root }}"
 
     - name: Register artifacts for fetch (primary paths)
-      # Store the paths of the created backups on the primary server.
       ansible.builtin.set_fact:
-        primary_backup_package: "{{ [dump_file, data_archive] }}"
+        primary_backup_package:
+          - "{{ (latest_db_dump.files | last).path }}"
+          - "{{ (latest_data_archive.files | last).path }}"
       tags: always
 
     - name: Fetch backup artifacts from primary to control node
-      # Pulls the backup files from the primary-server to the Ansible Control Node.
       ansible.builtin.fetch:
         src: "{{ item }}"
         dest: "{{ control_node_fetch_dir }}"
-        flat: true # Ensures files are copied directly into dest, not into host-specific subdirectories.
-                   # E.g., /tmp/ansible_dr_fetched_backups/myapp_2025...sql.gz
+        flat: true
       loop: "{{ primary_backup_package }}"
-      register: fetched_results # Register output to reconstruct paths on control node
+      register: fetched_results
 
     - name: Register fetched artifact paths on control node
-      # This task processes the output of 'fetch' to create a list of paths
-      # on the control node where the backups are now stored.
       ansible.builtin.set_fact:
         control_node_backup_package: |
           {% set fetched_paths = [] %}
@@ -101,31 +114,23 @@
 # PLAY 2 – TRANSFER  (Control Node ➜ DR host)  ➜  copy artifacts off-site
 ###############################################################################
 - name: Stage 2 – Transfer (Control Node ➜ DR)
-  hosts: dr # This play directly targets the DR host.
-  become: true # Connects as ansibleuser, then uses sudo for root privileges on dr-server
+  hosts: dr
+  become: true
   vars:
     dr_incoming: /srv/dr_incoming
 
   tasks:
     - name: Ensure incoming directory exists on DR host
-      # This task now runs directly on the DR host.
       ansible.builtin.file:
         path: "{{ dr_incoming }}"
         state: directory
         mode: "0750"
 
     - name: Copy backup artifacts from control node to DR host
-      # Copies the files that were fetched to the control node (from primary)
-      # and pushes them to the DR host.
-      # The 'src' path refers to the control node's filesystem.
-      # The 'dest' path refers to the DR host's filesystem.
       ansible.builtin.copy:
         src: "{{ item }}"
         dest: "{{ dr_incoming }}/"
-        mode: preserve # Preserves original file permissions
-      # Access the 'control_node_backup_package' fact.
-      # This fact was registered on the 'primary-server' host (or associated with it in Ansible's memory).
-      # Since we only have one 'primary-server' in the 'primary' group, we can access its facts directly.
+        mode: preserve
       loop: "{{ hostvars[groups['primary'][0]].control_node_backup_package }}"
       tags: [transfer]
 
@@ -158,15 +163,15 @@
       ansible.builtin.find:
         paths: "{{ incoming_dir }}"
         patterns: "data_*.tgz"
-        recurse: no
-        age_stamp: mtime
+        sortby: mtime
+        file_type: file
       register: data_archives
 
     - name: Extract latest data archive
       ansible.builtin.unarchive:
-        src: "{{ (data_archives.files | sort(attribute='mtime', reverse=true) | first).path }}"
+        src: "{{ (data_archives.files | last).path }}" # Use | last for newest
         dest: "{{ restore_root }}"
-        remote_src: true # Source file is on the remote (DR) host
+        remote_src: true
       when: data_archives.matched > 0
       tags: [restore, files]
 
@@ -174,12 +179,13 @@
       ansible.builtin.find:
         paths: "{{ incoming_dir }}"
         patterns: "{{ db_name }}_*.sql.gz"
-        age_stamp: mtime
+        sortby: mtime
+        file_type: file
       register: db_dumps
 
     - name: Restore PostgreSQL dump
       ansible.builtin.shell: >
-        bash -c 'gunzip -c "{{ (db_dumps.files | sort(attribute="mtime", reverse=true) | first).path }}" |
+        bash -c 'gunzip -c "{{ (db_dumps.files | last).path }}" |
                   psql -U {{ db_user }} {{ db_name }}'
       environment:
         PGPASSWORD: "{{ db_password }}"
