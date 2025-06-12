@@ -1,40 +1,40 @@
 # dr_rh_certified.yml
-# Sample DR workflow that relies exclusively on Red Hat-supported content
----
+# ────────────────────────────────────────────────────────────────
+# Disaster-Recovery workflow that uses ONLY Red Hat-supported content
+# ────────────────────────────────────────────────────────────────
+
 ###############################################################################
-#  PLAY 1 – PROTECT:  create application + DB backups on the primary site
+# PLAY 1 – PROTECT  (primary site)  ➜  create database + file backups
 ###############################################################################
 - name: Stage 1 – Protect (Primary site)
   hosts: primary
-  become: yes
+  become: true
   vars:
     backup_root: /var/backups/dr
     ts: "{{ '%Y%m%d%H%M%S' | strftime }}"
     db_name: myapp
-    db_user: postgres           # adjust as required
+    db_user: postgres        # adjust as needed
     dump_file: "{{ backup_root }}/{{ db_name }}_{{ ts }}.sql.gz"
     data_archive: "{{ backup_root }}/data_{{ ts }}.tgz"
 
   tasks:
+    # Ensure backup directory
     - name: Ensure backup directory exists
       ansible.builtin.file:
         path: "{{ backup_root }}"
         state: directory
         mode: "0750"
 
-    # ──────────────────────────────────────────────────────────────
-    # PostgreSQL dump without community collections:
-    # Use the RHEL System Role to be sure the DB is reachable, then
-    # issue pg_dump via the built-in command module.
-    # ──────────────────────────────────────────────────────────────
-    - name: Include the certified PostgreSQL system role (optional)
+    #—► (Optional) certify that PostgreSQL service is present & running
+    - name: Include certified PostgreSQL system role
       ansible.builtin.include_role:
         name: redhat.rhel_system_roles.postgresql
       vars:
         postgresql_owner: "{{ db_user }}"
       tags: always
 
-    - name: Dump + compress the database with pg_dump
+    # Dump + compress the database
+    - name: Dump and compress PostgreSQL database
       ansible.builtin.command: >
         pg_dump -U {{ db_user }} {{ db_name }} | gzip -9 -c > {{ dump_file }}
       environment:
@@ -42,14 +42,19 @@
       changed_when: true
       tags: [backup, database]
 
-    - name: Archive application data
-      ansible.builtin.archive:
-        path: /var/www/myapp
-        dest: "{{ data_archive }}"
-        format: gz
+    # -------------------- UPDATED TASK ---------------------------
+    # Replaces the former ansible.builtin.archive (non-certified)
+    - name: Create tarball of application data
+      ansible.builtin.command: >
+        tar --create --gzip --file {{ data_archive }} -C /var/www/myapp .
+      args:
+        creates: "{{ data_archive }}"        # makes task idempotent
+      changed_when: true
       tags: [backup, files]
+    # -------------------------------------------------------------
 
-    - name: Verify both backup artifacts exist
+    # Verify artifacts
+    - name: Verify backup artifacts exist
       ansible.builtin.stat:
         path: "{{ item }}"
       loop:
@@ -57,23 +62,24 @@
         - "{{ data_archive }}"
       register: art_stats
 
-    - name: Fail if any artifact missing
+    - name: Fail if any artifact is missing
       ansible.builtin.assert:
         that: "item.stat.exists"
         fail_msg: "Backup artifact {{ item.stat.path }} is missing!"
       loop: "{{ art_stats.results }}"
 
-    - name: Register list of artifacts for later plays
+    # Pass list of artifacts to later plays
+    - name: Register artifacts for transfer
       ansible.builtin.set_fact:
         backup_package: "{{ [dump_file, data_archive] }}"
       tags: always
 
 ###############################################################################
-#  PLAY 2 – TRANSFER: copy backup artifacts to DR host
+# PLAY 2 – TRANSFER  (primary ➜ DR host)  ➜  copy artifacts off-site
 ###############################################################################
 - name: Stage 2 – Transfer (Primary ➜ DR)
   hosts: primary
-  become: yes
+  become: true
   vars:
     dr_host: "{{ groups['dr'][0] }}"
     dr_incoming: /srv/dr_incoming
@@ -86,7 +92,7 @@
         mode: "0750"
       delegate_to: "{{ dr_host }}"
 
-    - name: Secure-copy artifacts to DR host  (built-in shell → scp)
+    - name: Copy backup artifacts to DR host (scp)
       ansible.builtin.shell: |
         scp -o StrictHostKeyChecking=no {{ item }} {{ dr_host }}:{{ dr_incoming }}/
       loop: "{{ hostvars[inventory_hostname].backup_package }}"
@@ -94,11 +100,11 @@
       tags: [transfer]
 
 ###############################################################################
-#  PLAY 3 – RECOVER: restore service at DR site (conditional)
+# PLAY 3 – RECOVER  (DR site)  ➜  restore when dr_action=failover
 ###############################################################################
 - name: Stage 3 – Recover (only when dr_action=failover)
   hosts: dr
-  become: yes
+  become: true
   vars:
     dr_action: "{{ dr_action | default('standby') }}"
     incoming_dir: /srv/dr_incoming
@@ -107,7 +113,7 @@
     db_user: postgres
 
   tasks:
-    - name: Skip play unless fail-over requested
+    - name: Skip unless fail-over requested
       ansible.builtin.meta: end_play
       when: dr_action != 'failover'
 
@@ -117,6 +123,7 @@
         state: directory
         mode: "0750"
 
+    # Find and extract latest data archive
     - name: Find latest data archive
       ansible.builtin.find:
         paths: "{{ incoming_dir }}"
@@ -133,13 +140,14 @@
       when: data_archives.matched > 0
       tags: [restore, files]
 
+    # Find and restore latest DB dump
     - name: Find latest DB dump
       ansible.builtin.find:
         paths: "{{ incoming_dir }}"
         patterns: "{{ db_name }}_*.sql.gz"
       register: db_dumps
 
-    - name: Restore PostgreSQL dump (command, no community collection)
+    - name: Restore PostgreSQL dump
       ansible.builtin.command: >
         bash -c 'gunzip -c "{{ (db_dumps.files | sort(attribute="mtime") | last).path }}" |
                  psql -U {{ db_user }} {{ db_name }}'
@@ -149,13 +157,14 @@
       changed_when: true
       tags: [restore, database]
 
+    # Bring application up and confirm health
     - name: Start application service
       ansible.builtin.systemd:
         name: myapp
         state: started
       tags: [restore, services]
 
-    - name: Check application health
+    - name: Check application health endpoint
       ansible.builtin.uri:
         url: http://localhost/health
         status_code: 200
