@@ -1,16 +1,35 @@
 # dr_rh_certified.yml
-# ...
+# ────────────────────────────────────────────────────────────────
+# Disaster-Recovery workflow that uses ONLY Red Hat-supported content
+# ────────────────────────────────────────────────────────────────
 
+###############################################################################
+# PLAY 1 – PROTECT  (primary site)  ➜  create database + file backups
+###############################################################################
 - name: Stage 1 – Protect (Primary site)
   hosts: primary
-  become: true
+  become: true # Connects as ansibleuser, then uses sudo for root privileges on primary-server
   vars:
+    # Removed current_timestamp variable here.
+    # Filenames will now be generated dynamically on the remote host.
     db_name: myapp
     db_user: postgres
-    db_password: "pass@123"
+    # -------------------------------------------------------------------------
+    # IMPORTANT: Define 'db_password' securely.
+    # Recommended ways:
+    # 1. Ansible Vault: Encrypt a file (e.g., group_vars/all/vault.yml)
+    #    containing: db_password: "your_actual_db_password"
+    #    Then run playbook with 'ansible-playbook --ask-vault-pass ...'
+    # 2. As an --extra-vars command-line argument (LESS SECURE for production):
+    #    ansible-playbook ... --extra-vars "db_password=your_actual_db_password"
+    # 3. In your inventory.ini under [all:vars] (LESS SECURE for production):
+    #    db_password='your_actual_db_password'
+    # -------------------------------------------------------------------------
+    db_password: "pass@123" # Assumes db_password will be passed or vaulted
+
     backup_root: /var/backups/dr
     app_data_path: /var/www/myapp
-    control_node_fetch_dir: "/tmp/ansible_dr_fetched_backups"
+    control_node_fetch_dir: "/tmp/ansible_dr_fetched_backups" # Directory on the Ansible Control Node
 
   tasks:
     - name: Ensure backup directory exists on primary
@@ -20,17 +39,20 @@
         mode: "0750"
 
     - name: Dump and compress PostgreSQL database
+      # Use $(date +%Y%m%d%H%M%S) directly in the shell command for the remote host's timestamp.
+      # This ensures the filename matches the actual creation time on the remote host.
       ansible.builtin.shell: >
         pg_dump -U {{ db_user }} {{ db_name }} | gzip -9 -c > {{ backup_root }}/{{ db_name }}_$(date +%Y%m%d%H%M%S).sql.gz
       environment:
         PGPASSWORD: "{{ db_password }}"
-      changed_when: true
+      changed_when: true # Set to true because we can't reliably detect changes with pipes
       tags: [backup, database]
 
     - name: Create tarball of application data
+      # Use $(date +%Y%m%d%H%M%S) directly in the shell command for the remote host's timestamp.
       ansible.builtin.shell: >
         tar --create --gzip --file {{ backup_root }}/data_$(date +%Y%m%d%H%M%S).tgz -C {{ app_data_path }} .
-      changed_when: true
+      changed_when: true # Set to true because we can't reliably detect changes with pipes
       tags: [backup, files]
 
     - name: Wait 15 seconds for artifacts to settle on disk
@@ -42,7 +64,8 @@
         paths: "{{ backup_root }}"
         patterns: "{{ db_name }}_*.sql.gz"
         file_type: file
-        # Removed 'sortby' parameter
+        # 'sortby' parameter is for Ansible 2.9+, removed for broader compatibility.
+        # Sorting will be done with Jinja2 filters below.
       register: all_db_dumps
 
     - name: Find all data archive files
@@ -50,7 +73,7 @@
         paths: "{{ backup_root }}"
         patterns: "data_*.tgz"
         file_type: file
-        # Removed 'sortby' parameter
+        # 'sortby' parameter is for Ansible 2.9+, removed for broader compatibility.
       register: all_data_archives
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
@@ -62,17 +85,16 @@
     - name: Fail if latest DB dump was not found
       ansible.builtin.assert:
         that:
-          # Check if any files were matched
-          - all_db_dumps.matched > 0
-          # Ensure the latest file is available after sorting.
-          # We use '| sort(attribute="mtime", reverse=true) | first' to get the latest.
+          - all_db_dumps.matched > 0 # Check if any files were matched
+          # Get the latest file by sorting by 'mtime' in reverse and picking the first one.
           - (all_db_dumps.files | sort(attribute="mtime", reverse=true) | first).path is defined
         fail_msg: "No recent DB dump found matching pattern {{ db_name }}_*.sql.gz in {{ backup_root }}"
 
     - name: Fail if latest data archive was not found
       ansible.builtin.assert:
         that:
-          - all_data_archives.matched > 0
+          - all_data_archives.matched > 0 # Check if any files were matched
+          # Get the latest file by sorting by 'mtime' in reverse and picking the first one.
           - (all_data_archives.files | sort(attribute="mtime", reverse=true) | first).path is defined
         fail_msg: "No recent data archive found matching pattern data_*.tgz in {{ backup_root }}"
 
@@ -88,9 +110,10 @@
       ansible.builtin.fetch:
         src: "{{ item }}"
         dest: "{{ control_node_fetch_dir }}"
-        flat: true
+        flat: true # Ensures files are copied directly into dest, not into host-specific subdirectories.
+                   # E.g., /tmp/ansible_dr_fetched_backups/myapp_2025...sql.gz
       loop: "{{ primary_backup_package }}"
-      register: fetched_results
+      register: fetched_results # Register output to reconstruct paths on control node
 
     - name: Register fetched artifact paths on control node
       ansible.builtin.set_fact:
@@ -104,22 +127,58 @@
           {{ fetched_paths }}
       tags: always
 
-# ... (rest of Play 2 and Play 3) ...
+###############################################################################
+# PLAY 2 – TRANSFER  (Control Node ➜ DR host)  ➜  copy artifacts off-site
+###############################################################################
+- name: Stage 2 – Transfer (Control Node ➜ DR)
+  hosts: dr # This play directly targets the DR host.
+  become: true # Connects as ansibleuser, then uses sudo for root privileges on dr-server
+  vars:
+    dr_incoming: /srv/dr_incoming
 
+  tasks:
+    - name: Ensure incoming directory exists on DR host
+      # This task now runs directly on the DR host.
+      ansible.builtin.file:
+        path: "{{ dr_incoming }}"
+        state: directory
+        mode: "0750"
+
+    - name: Copy backup artifacts from control node to DR host
+      # Copies the files that were fetched to the control node (from primary)
+      # and pushes them to the DR host.
+      # The 'src' path refers to the control node's filesystem.
+      # The 'dest' path refers to the DR host's filesystem.
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "{{ dr_incoming }}/"
+        mode: preserve # Preserves original file permissions
+      # Access the 'control_node_backup_package' fact.
+      # This fact was registered on the 'primary-server' host (or associated with it in Ansible's memory).
+      # Since we only have one 'primary-server' in the 'primary' group, we can access its facts directly.
+      loop: "{{ hostvars[groups['primary'][0]].control_node_backup_package }}"
+      tags: [transfer]
+
+###############################################################################
+# PLAY 3 – RECOVER  (DR site)  ➜  restore when dr_action=failover
+###############################################################################
 - name: Stage 3 – Recover (only when dr_action=failover)
   hosts: dr
   become: true
   vars:
-    dr_action: "{{ dr_action | default('standby') }}"
+    # Removed the problematic 'dr_action: "{{ dr_action | default('standby') }}"' definition.
+    # The default will be handled directly in the 'when' condition.
     incoming_dir: /srv/dr_incoming
     restore_root: /srv/dr_restore
     db_name: myapp
     db_user: postgres
-    db_password: "{{ lookup('ansible.builtin.var', 'db_password', default='') }}"
+    db_password: "pass@123" # Assumes db_password will be passed or vaulted
 
   tasks:
     - name: Skip unless fail-over requested
       ansible.builtin.meta: end_play
+      # Apply the default filter directly in the 'when' condition.
+      # If 'dr_action' is not provided (e.g., via --extra-vars), it defaults to 'standby'.
       when: (dr_action | default('standby')) != 'failover'
 
     - name: Create restore directory
@@ -133,14 +192,13 @@
         paths: "{{ incoming_dir }}"
         patterns: "data_*.tgz"
         file_type: file
-        # Removed 'sortby' parameter
-      register: all_data_archives_dr # Changed name to avoid conflict with primary's register
+      register: all_data_archives_dr # Distinct variable name for DR host's find results
 
     - name: Extract latest data archive
       ansible.builtin.unarchive:
-        src: "{{ (all_data_archives_dr.files | sort(attribute='mtime', reverse=true) | first).path }}"
+        src: "{{ (all_data_archives_dr.files | sort(attribute='mtime', reverse=true) | first).path }}" # Sort to get latest
         dest: "{{ restore_root }}"
-        remote_src: true
+        remote_src: true # Source file is on the remote (DR) host
       when: all_data_archives_dr.matched > 0
       tags: [restore, files]
 
@@ -149,8 +207,7 @@
         paths: "{{ incoming_dir }}"
         patterns: "{{ db_name }}_*.sql.gz"
         file_type: file
-        # Removed 'sortby' parameter
-      register: all_db_dumps_dr # Changed name to avoid conflict with primary's register
+      register: all_db_dumps_dr # Distinct variable name for DR host's find results
 
     - name: Restore PostgreSQL dump
       ansible.builtin.shell: >
