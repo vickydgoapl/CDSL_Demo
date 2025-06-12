@@ -31,7 +31,7 @@
     # Dump + compress the database
     - name: Dump and compress PostgreSQL database
       ansible.builtin.command: >
-        pg_dump -U {{ db_user }} {{ db_name }} | gzip -9 -c > {{ dump_file }}
+        pg_dump -U {{ db_user }} {{ db_name }} | gzip -c > {{ dump_file }}
       environment:
         # PGPASSWORD should be provided securely (e.g., via Ansible Vault)
         # Using lookup('ansible.builtin.var', 'db_password') implies db_password
