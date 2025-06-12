@@ -43,7 +43,7 @@
     - name: Dump and compress PostgreSQL database
       # Using 'command' module for flexibility with piping and compression.
       # Requires pg_dump and gzip to be installed on the primary-server.
-      ansible.builtin.command: >
+      ansible.builtin.shell: >
         pg_dump -U {{ db_user }} {{ db_name }} | gzip -9 -c > {{ dump_file }}
       environment:
         # PGPASSWORD is crucial for database authentication.
@@ -54,7 +54,7 @@
     - name: Create tarball of application data
       # Using 'command' module with 'tar' for compatibility and direct control.
       # 'creates' argument ensures idempotency: task runs only if file doesn't exist.
-      ansible.builtin.command: >
+      ansible.builtin.shell: >
         tar --create --gzip --file {{ data_archive }} -C {{ app_data_path }} .
       args:
         creates: "{{ data_archive }}"
@@ -172,7 +172,7 @@
     - name: Restore PostgreSQL dump
       # Restores the database using gunzip and psql.
       # Requires psql, gunzip to be installed on the dr-server.
-      ansible.builtin.command: >
+      ansible.builtin.shell: >
         bash -c 'gunzip -c "{{ (db_dumps.files | sort(attribute="mtime", reverse=true) | first).path }}" |
                   psql -U {{ db_user }} {{ db_name }}'
       environment:
