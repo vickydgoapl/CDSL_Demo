@@ -4,7 +4,7 @@
 # ────────────────────────────────────────────────────────────────
 
 ###############################################################################
-# PLAY 1 – PROTECT  (primary site)  ➜  create database + file backups
+# PLAY 1 – PROTECT  (primary site)  ➜  create database + file backups
 ###############################################################################
 - name: Stage 1 – Protect (Primary site)
   hosts: primary
@@ -14,6 +14,9 @@
     ts: "{{ '%Y%m%d%H%M%S' | strftime }}"
     db_name: myapp
     db_user: postgres        # adjust as needed
+    # Ensure db_password is provided securely, e.g., via Ansible Vault
+    # or as an extra var (--extra-vars "db_password=your_secret_password")
+    # db_password: "your_secret_password" # This line should be vaulted or passed via extra vars
     dump_file: "{{ backup_root }}/{{ db_name }}_{{ ts }}.sql.gz"
     data_archive: "{{ backup_root }}/data_{{ ts }}.tgz"
 
@@ -30,12 +33,15 @@
       ansible.builtin.command: >
         pg_dump -U {{ db_user }} {{ db_name }} | gzip -9 -c > {{ dump_file }}
       environment:
-        PGPASSWORD: "{{ lookup('ansible.builtin.var', 'db_password') | default('', true) }}"
+        # PGPASSWORD should be provided securely (e.g., via Ansible Vault)
+        # Using lookup('ansible.builtin.var', 'db_password') implies db_password
+        # is available in vars, inventory, or as an extra var.
+        PGPASSWORD: "{{ lookup('ansible.builtin.var', 'db_password', default='') }}"
       changed_when: true
       tags: [backup, database]
 
     # -------------------- UPDATED TASK ---------------------------
-    # Replaces the former ansible.builtin.archive (non-certified)
+    # Replaces the former ansible.builtin.archive (non-certified for this context)
     - name: Create tarball of application data
       ansible.builtin.command: >
         tar --create --gzip --file {{ data_archive }} -C /var/www/myapp .
@@ -67,12 +73,13 @@
       tags: always
 
 ###############################################################################
-# PLAY 2 – TRANSFER  (primary ➜ DR host)  ➜  copy artifacts off-site
+# PLAY 2 – TRANSFER  (primary ➜ DR host)  ➜  copy artifacts off-site
 ###############################################################################
 - name: Stage 2 – Transfer (Primary ➜ DR)
   hosts: primary
   become: true
   vars:
+    # Ensure 'dr' group exists and contains at least one host in your inventory
     dr_host: "{{ groups['dr'][0] }}"
     dr_incoming: /srv/dr_incoming
 
@@ -85,6 +92,9 @@
       delegate_to: "{{ dr_host }}"
 
     - name: Copy backup artifacts to DR host (scp)
+      # This task assumes passwordless SSH is configured between the primary host
+      # and the DR host for the user executing the Ansible playbook.
+      # 'scp' is executed on the primary host.
       ansible.builtin.shell: |
         scp -o StrictHostKeyChecking=no {{ item }} {{ dr_host }}:{{ dr_incoming }}/
       loop: "{{ hostvars[inventory_hostname].backup_package }}"
@@ -92,17 +102,19 @@
       tags: [transfer]
 
 ###############################################################################
-# PLAY 3 – RECOVER  (DR site)  ➜  restore when dr_action=failover
+# PLAY 3 – RECOVER  (DR site)  ➜  restore when dr_action=failover
 ###############################################################################
 - name: Stage 3 – Recover (only when dr_action=failover)
   hosts: dr
   become: true
   vars:
-    dr_action: "{{ dr_action | default('standby') }}"
+    dr_action: "{{ dr_action | default('standby') }}" # Default to 'standby' mode
     incoming_dir: /srv/dr_incoming
     restore_root: /srv/dr_restore
     db_name: myapp
     db_user: postgres
+    # Ensure db_password is provided securely (e.g., via Ansible Vault)
+    # db_password: "your_secret_password" # This line should be vaulted or passed via extra vars
 
   tasks:
     - name: Skip unless fail-over requested
@@ -121,15 +133,15 @@
         paths: "{{ incoming_dir }}"
         patterns: "data_*.tgz"
         recurse: no
-        age_stamp: mtime
+        age_stamp: mtime # Finds the latest based on modification time
       register: data_archives
 
     - name: Extract latest data archive
       ansible.builtin.unarchive:
-        src: "{{ data_archives.files | sort(attribute='mtime') | last | default('') }}"
+        src: "{{ (data_archives.files | sort(attribute='mtime') | last).path }}" # Correctly select the latest file
         dest: "{{ restore_root }}"
-        remote_src: yes
-      when: data_archives.matched > 0
+        remote_src: yes # Source file is on the remote (DR) host
+      when: data_archives.matched > 0 # Only attempt if archives were found
       tags: [restore, files]
 
     # Find and restore latest DB dump
@@ -137,15 +149,17 @@
       ansible.builtin.find:
         paths: "{{ incoming_dir }}"
         patterns: "{{ db_name }}_*.sql.gz"
+        age_stamp: mtime # Also find latest DB dump by modification time
       register: db_dumps
 
     - name: Restore PostgreSQL dump
       ansible.builtin.command: >
         bash -c 'gunzip -c "{{ (db_dumps.files | sort(attribute="mtime") | last).path }}" |
-                 psql -U {{ db_user }} {{ db_name }}'
+                  psql -U {{ db_user }} {{ db_name }}'
       environment:
-        PGPASSWORD: "{{ lookup('ansible.builtin.var', 'db_password') | default('', true) }}"
-      when: db_dumps.matched > 0
+        # PGPASSWORD should be provided securely (e.g., via Ansible Vault)
+        PGPASSWORD: "{{ lookup('ansible.builtin.var', 'db_password', default='') }}"
+      when: db_dumps.matched > 0 # Only attempt if dumps were found
       changed_when: true
       tags: [restore, database]
 
