@@ -120,7 +120,7 @@
   tasks:
     - name: Skip unless fail-over requested
       ansible.builtin.meta: end_play
-      when: dr_action != 'failover'
+      when: (dr_action | default('standby')) != 'failover'
 
     - name: Create restore directory
       ansible.builtin.file:
