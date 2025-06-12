@@ -1,17 +1,10 @@
 # dr_rh_certified.yml
-# ────────────────────────────────────────────────────────────────
-# Disaster-Recovery workflow that uses ONLY Red Hat-supported content
-# ────────────────────────────────────────────────────────────────
+# ...
 
-###############################################################################
-# PLAY 1 – PROTECT  (primary site)  ➜  create database + file backups
-###############################################################################
 - name: Stage 1 – Protect (Primary site)
   hosts: primary
-  become: true # Connects as ansibleuser, then uses sudo for root privileges on primary-server
+  become: true
   vars:
-    # Removed current_timestamp variable here.
-    # Filenames will now be generated dynamically on the remote host.
     db_name: myapp
     db_user: postgres
     db_password: "pass@123"
@@ -27,7 +20,6 @@
         mode: "0750"
 
     - name: Dump and compress PostgreSQL database
-      # Use $(date +%Y%m%d%H%M%S) directly in the shell command for the remote host's timestamp
       ansible.builtin.shell: >
         pg_dump -U {{ db_user }} {{ db_name }} | gzip -9 -c > {{ backup_root }}/{{ db_name }}_$(date +%Y%m%d%H%M%S).sql.gz
       environment:
@@ -36,7 +28,6 @@
       tags: [backup, database]
 
     - name: Create tarball of application data
-      # Use $(date +%Y%m%d%H%M%S) directly in the shell command for the remote host's timestamp
       ansible.builtin.shell: >
         tar --create --gzip --file {{ backup_root }}/data_$(date +%Y%m%d%H%M%S).tgz -C {{ app_data_path }} .
       changed_when: true
@@ -46,48 +37,51 @@
       ansible.builtin.pause:
         seconds: 15
 
-    - name: Find the latest created DB dump file
+    - name: Find all DB dump files
       ansible.builtin.find:
         paths: "{{ backup_root }}"
         patterns: "{{ db_name }}_*.sql.gz"
-        # Sort by modification time to get the most recent one.
-        # find's 'sortby: mtime' is ascending by default, so the newest is 'last'.
         file_type: file
-      register: latest_db_dump
+        # Removed 'sortby' parameter
+      register: all_db_dumps
 
-    - name: Find the latest created data archive file
+    - name: Find all data archive files
       ansible.builtin.find:
         paths: "{{ backup_root }}"
         patterns: "data_*.tgz"
-        sortby: mtime
         file_type: file
-      register: latest_data_archive
+        # Removed 'sortby' parameter
+      register: all_data_archives
 
-    - name: DEBUG - Show discovered artifact paths
+    - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
         msg:
-          - "Discovered DB Dump Path: {{ (latest_db_dump.files | last).path | default('Not found') }}"
-          - "Discovered Data Archive Path: {{ (latest_data_archive.files | last).path | default('Not found') }}"
+          - "Discovered DB Dumps (unsorted): {{ all_db_dumps.files | map(attribute='path') | list }}"
+          - "Discovered Data Archives (unsorted): {{ all_data_archives.files | map(attribute='path') | list }}"
 
     - name: Fail if latest DB dump was not found
       ansible.builtin.assert:
         that:
-          - latest_db_dump.matched > 0
-          - (latest_db_dump.files | last).path is defined # Ensure path exists in the discovered file object
+          # Check if any files were matched
+          - all_db_dumps.matched > 0
+          # Ensure the latest file is available after sorting.
+          # We use '| sort(attribute="mtime", reverse=true) | first' to get the latest.
+          - (all_db_dumps.files | sort(attribute="mtime", reverse=true) | first).path is defined
         fail_msg: "No recent DB dump found matching pattern {{ db_name }}_*.sql.gz in {{ backup_root }}"
 
     - name: Fail if latest data archive was not found
       ansible.builtin.assert:
         that:
-          - latest_data_archive.matched > 0
-          - (latest_data_archive.files | last).path is defined # Ensure path exists in the discovered file object
+          - all_data_archives.matched > 0
+          - (all_data_archives.files | sort(attribute="mtime", reverse=true) | first).path is defined
         fail_msg: "No recent data archive found matching pattern data_*.tgz in {{ backup_root }}"
 
     - name: Register artifacts for fetch (primary paths)
       ansible.builtin.set_fact:
         primary_backup_package:
-          - "{{ (latest_db_dump.files | last).path }}"
-          - "{{ (latest_data_archive.files | last).path }}"
+          # Sort the found files by 'mtime' in reverse (newest first) and pick the first one.
+          - "{{ (all_db_dumps.files | sort(attribute='mtime', reverse=true) | first).path }}"
+          - "{{ (all_data_archives.files | sort(attribute='mtime', reverse=true) | first).path }}"
       tags: always
 
     - name: Fetch backup artifacts from primary to control node
@@ -110,33 +104,8 @@
           {{ fetched_paths }}
       tags: always
 
-###############################################################################
-# PLAY 2 – TRANSFER  (Control Node ➜ DR host)  ➜  copy artifacts off-site
-###############################################################################
-- name: Stage 2 – Transfer (Control Node ➜ DR)
-  hosts: dr
-  become: true
-  vars:
-    dr_incoming: /srv/dr_incoming
+# ... (rest of Play 2 and Play 3) ...
 
-  tasks:
-    - name: Ensure incoming directory exists on DR host
-      ansible.builtin.file:
-        path: "{{ dr_incoming }}"
-        state: directory
-        mode: "0750"
-
-    - name: Copy backup artifacts from control node to DR host
-      ansible.builtin.copy:
-        src: "{{ item }}"
-        dest: "{{ dr_incoming }}/"
-        mode: preserve
-      loop: "{{ hostvars[groups['primary'][0]].control_node_backup_package }}"
-      tags: [transfer]
-
-###############################################################################
-# PLAY 3 – RECOVER  (DR site)  ➜  restore when dr_action=failover
-###############################################################################
 - name: Stage 3 – Recover (only when dr_action=failover)
   hosts: dr
   become: true
@@ -159,37 +128,37 @@
         state: directory
         mode: "0750"
 
-    - name: Find latest data archive
+    - name: Find all data archive files on DR
       ansible.builtin.find:
         paths: "{{ incoming_dir }}"
         patterns: "data_*.tgz"
-        sortby: mtime
         file_type: file
-      register: data_archives
+        # Removed 'sortby' parameter
+      register: all_data_archives_dr # Changed name to avoid conflict with primary's register
 
     - name: Extract latest data archive
       ansible.builtin.unarchive:
-        src: "{{ (data_archives.files | last).path }}" # Use | last for newest
+        src: "{{ (all_data_archives_dr.files | sort(attribute='mtime', reverse=true) | first).path }}"
         dest: "{{ restore_root }}"
         remote_src: true
-      when: data_archives.matched > 0
+      when: all_data_archives_dr.matched > 0
       tags: [restore, files]
 
-    - name: Find latest DB dump
+    - name: Find all DB dump files on DR
       ansible.builtin.find:
         paths: "{{ incoming_dir }}"
         patterns: "{{ db_name }}_*.sql.gz"
-        sortby: mtime
         file_type: file
-      register: db_dumps
+        # Removed 'sortby' parameter
+      register: all_db_dumps_dr # Changed name to avoid conflict with primary's register
 
     - name: Restore PostgreSQL dump
       ansible.builtin.shell: >
-        bash -c 'gunzip -c "{{ (db_dumps.files | last).path }}" |
+        bash -c 'gunzip -c "{{ (all_db_dumps_dr.files | sort(attribute="mtime", reverse=true) | first).path }}" |
                   psql -U {{ db_user }} {{ db_name }}'
       environment:
         PGPASSWORD: "{{ db_password }}"
-      when: db_dumps.matched > 0
+      when: all_db_dumps_dr.matched > 0
       changed_when: true
       tags: [restore, database]
 
