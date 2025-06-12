@@ -12,7 +12,7 @@
   vars:
     # Use ansible_date_time for a more robust timestamp, available on all hosts
     # and ensures consistency across different Ansible versions/environments.
-    current_timestamp: "{{ ansible_date_time.strftime('%Y%m%d%H%M%S') }}"
+    current_timestamp: "{{ ansible.builtin.now().strftime('%Y%m%d%H%M%S') }}"
     db_name: myapp
     db_user: postgres
     # -------------------------------------------------------------------------
