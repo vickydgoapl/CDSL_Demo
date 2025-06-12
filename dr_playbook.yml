@@ -51,11 +51,16 @@
         - "{{ data_archive }}"
       register: art_stats
 
+    - name: DEBUG - Show results of stat for artifacts
+      ansible.builtin.debug:
+        var: art_stats
+        # You can also use 'msg' for more direct output
+        # msg: "Stat results: {{ art_stats }}"
+
     - name: Fail if any artifact is missing
       ansible.builtin.assert:
         that: "item.stat.exists"
-        # FIX: Changed 'item.stat.path' to 'item.item' for robustness
-        fail_msg: "Backup artifact {{ item.item }} is missing!"
+        fail_msg: "Backup artifact {{ item.item }} is missing!" # Ensure this line is updated to item.item
       loop: "{{ art_stats.results }}"
 
     - name: Register artifacts for fetch (primary paths)
