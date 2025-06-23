@@ -27,9 +27,11 @@ class CallbackModule(CallbackBase):
 
     # ---------- per-task hooks ----------
     def v2_runner_on_start(self, host, task, **kw):          # noqa: N802
+        self._display.display(f"Runner start log")
         self._tasks[task.get_name()] = {"start": self._utc_iso()}
 
     def _mark_end(self, result):                             # common exit path
+        self._display.display(f"runner end log")
         self._tasks[result.task_name]["end"] = self._utc_iso()
 
     v2_runner_on_ok      = _mark_end          # noqa: N802
@@ -38,6 +40,7 @@ class CallbackModule(CallbackBase):
 
     # ---------- play done → write CSV → send mail ----------
     def v2_playbook_on_stats(self, stats):                   # noqa: N802
+        self._display.display(f"csv callback start")
         self._write_csv()
         self._send_csv_email()
 
