@@ -17,9 +17,11 @@ class CallbackModule(CallbackBase):
         super().__init__()
         self._tasks: dict[str, dict[str, str]] = {}
         # path can come from env var or default to ./task_times.csv
-        self._outfile = pathlib.Path(
-            os.getenv("ANSIBLE_CSV_PATH", "task_times.csv")
-        ).expanduser()
+        self._outfile = (pathlib.Path(os.getenv("RUNNER_ARTIFACT_DIR", "/tmp")) / "task_times.csv")
+
+        # self._outfile = pathlib.Path(
+        #     os.getenv("ANSIBLE_CSV_PATH", "task_times.csv")
+        # ).expanduser()
 
     # ---------- helpers ----------
     @staticmethod
