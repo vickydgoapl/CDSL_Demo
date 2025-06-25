@@ -253,7 +253,7 @@
         paths: "{{ incoming_dir }}"
         patterns: "{{ db_name }}_*.sql.gz"
         file_type: file
-      register: "{{all_db_dumps_dr}}" # Distinct variable name for DR host's find results
+      register: all_db_dumps_dr # Distinct variable name for DR host's find results
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
