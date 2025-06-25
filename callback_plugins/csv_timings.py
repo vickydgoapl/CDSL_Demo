@@ -1,86 +1,347 @@
-# callback_plugins/csv_timings.py
-from __future__ import annotations
-from ansible.plugins.callback import CallbackBase
-import csv, os, pathlib, datetime, smtplib, ssl
-from email.message import EmailMessage
+# dr_rh_certified.yml
+# ────────────────────────────────────────────────────────────────
+# Disaster-Recovery workflow that uses ONLY Red Hat-supported content
+# ────────────────────────────────────────────────────────────────
 
-class CallbackModule(CallbackBase):
-    """
-    Aggregate callback: write per-task timings to CSV & e-mail via Gmail.
-    Enable with  callback_whitelist = csv_timings
-    """
-    CALLBACK_VERSION = 2.0
-    CALLBACK_TYPE    = "aggregate"
-    CALLBACK_NAME    = "csv_timings"
-    CALLBACK_NEEDS_WHITELIST = True
+###############################################################################
+# PLAY 1 – PROTECT  (primary site)  ➜  create database + file backups
+###############################################################################
+- name: Stage 1 – Protect (Primary site)
+  hosts: primary
+  become: true # Connects as ansibleuser, then uses sudo for root privileges on primary-server
+  vars:
+    # Removed current_timestamp variable here.
+    # Filenames will now be generated dynamically on the remote host.
+    db_name: myapp
+    db_user: postgres
+    # -------------------------------------------------------------------------
+    # IMPORTANT: Define 'db_password' securely.
+    # Recommended ways:
+    # 1. Ansible Vault: Encrypt a file (e.g., group_vars/all/vault.yml)
+    #    containing: db_password: "your_actual_db_password"
+    #    Then run playbook with 'ansible-playbook --ask-vault-pass ...'
+    # 2. As an --extra-vars command-line argument (LESS SECURE for production):
+    #    ansible-playbook ... --extra-vars "db_password=your_actual_db_password"
+    # 3. In your inventory.ini under [all:vars] (LESS SECURE for production):
+    #    db_password='your_actual_db_password'
+    # -------------------------------------------------------------------------
+    db_password: "pass@123" # Assumes db_password will be passed or vaulted
 
-    def __init__(self):
-        super().__init__()
-        self._tasks: dict[str, dict[str, str]] = {}
-        arti_dir = pathlib.Path(os.getenv("RUNNER_ARTIFACT_DIR", "/tmp"))
-        self._outfile = arti_dir / "task_times.csv"
+    backup_root: /var/backups/dr
+    app_data_path: /var/www/myapp
+    control_node_fetch_dir: "/tmp/ansible_dr_fetched_backups" # Directory on the Ansible Control Node
 
-    # ---------- helpers ----------
-    @staticmethod
-    def _utc_iso() -> str:
-        return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+  tasks:
+    - name: Ensure backup directory exists on primary
+      ansible.builtin.file:
+        path: "{{ backup_root }}"
+        state: directory
+        mode: "0750"
+      register: backup_dir_exists
 
-    # ---------- per-task hooks ----------
-    def v2_runner_on_start(self, host, task, **kw):          # noqa: N802
-        self._display.display(f"Runner start log")
-        self._tasks[task.get_name()] = {"start": self._utc_iso()}
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: "{{backup_dir_exists}}"
 
-    def _mark_end(self, result):                             # common exit path
-        self._display.display(f"runner end log")
-        self._tasks[result.task_name]["end"] = self._utc_iso()
+    - name: Dump and compress PostgreSQL database
+      # Use $(date +%Y%m%d%H%M%S) directly in the shell command for the remote host's timestamp.
+      # This ensures the filename matches the actual creation time on the remote host.
+      ansible.builtin.shell: >
+        pg_dump -U {{ db_user }} {{ db_name }} | gzip -9 -c > {{ backup_root }}/{{ db_name }}_$(date +%Y%m%d%H%M%S).sql.gz
+      environment:
+        PGPASSWORD: "{{ db_password }}"
+      changed_when: true # Set to true because we can't reliably detect changes with pipes
+      register: dump_and_compress_db
+      tags: [backup, database]
 
-    v2_runner_on_ok      = _mark_end          # noqa: N802
-    v2_runner_on_failed  = _mark_end          # noqa: N802
-    v2_runner_on_skipped = _mark_end          # noqa: N802
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: "{{dump_and_compress_db}}"
 
-    # ---------- play done → write CSV → send mail ----------
-    def v2_playbook_on_stats(self, stats):                   # noqa: N802
-        self._display.display(f"csv callback start")
-        self._write_csv()
-        self._send_csv_email()
+    - name: Create tarball of application data
+      # Use $(date +%Y%m%d%H%M%S) directly in the shell command for the remote host's timestamp.
+      ansible.builtin.shell: >
+        tar --create --gzip --file {{ backup_root }}/data_$(date +%Y%m%d%H%M%S).tgz -C {{ app_data_path }} .
+      changed_when: true # Set to true because we can't reliably detect changes with pipes
+      register: create_app_data_tarball
+      tags: [backup, files]
 
-    def _write_csv(self):
-        self._outfile.parent.mkdir(parents=True, exist_ok=True)
-        with self._outfile.open("w", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=["task", "start", "end"])
-            writer.writeheader()
-            for task, t in self._tasks.items():
-                writer.writerow({"task": task,
-                                 "start": t.get("start", ""),
-                                 "end":   t.get("end",   "")})
-        self._display.display(f"CSV timing written to {self._outfile}")
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: "{{create_app_data_tarball}}"
 
-    def _send_csv_email(self):
-        user = os.getenv("GMAIL_USER")
-        pwd  = os.getenv("GMAIL_PASS")
-        to   = os.getenv("GMAIL_TO", user)
+    - name: Find all DB dump files
+      ansible.builtin.find:
+        paths: "{{ backup_root }}"
+        patterns: "{{ db_name }}_*.sql.gz"
+        file_type: file
+        # 'sortby' parameter is for Ansible 2.9+, removed for broader compatibility.
+        # Sorting will be done with Jinja2 filters below.
+      register: all_db_dumps
 
-        if not (user and pwd):
-            self._display.warning("GMAIL_USER / GMAIL_PASS unset – skipping email")
-            return
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: "{{all_db_dumps}}"
 
-        msg = EmailMessage()
-        msg["Subject"] = f"Ansible task timings – {self._utc_iso()}"
-        msg["From"]    = user
-        msg["To"]      = to
-        msg.set_content(
-            "Hi,\n\nAttached is the per-task runtime CSV generated by Ansible."
-        )
-        with self._outfile.open("rb") as fh:
-            msg.add_attachment(
-                fh.read(), maintype="text", subtype="csv",
-                filename=self._outfile.name
-            )
+    - name: Find all data archive files
+      ansible.builtin.find:
+        paths: "{{ backup_root }}"
+        patterns: "data_*.tgz"
+        file_type: file
+        # 'sortby' parameter is for Ansible 2.9+, removed for broader compatibility.
+      register: all_data_archives
 
-        context = ssl.create_default_context()
-        with smtplib.SMTP("smtp.gmail.com", 587) as smtp:        # TLS port 587
-            smtp.starttls(context=context)
-            smtp.login(user, pwd)                                # App-password auth
-            smtp.send_message(msg)
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: "{{all_data_archives}}"
 
-        self._display.display(f"E-mail with CSV sent to {to} via Gmail SMTP")
+    - name: Fail if latest DB dump was not found
+      ansible.builtin.assert:
+        that:
+          - all_db_dumps.matched > 0 # Check if any files were matched
+          # Get the latest file by sorting by 'mtime' in reverse and picking the first one.
+          - (all_db_dumps.files | sort(attribute="mtime", reverse=true) | first).path is defined
+        fail_msg: "No recent DB dump found matching pattern {{ db_name }}_*.sql.gz in {{ backup_root }}"
+      register: fail_if_db_dump_not_found
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: "{{fail_if_db_dump_not_found}}"
+
+    - name: Fail if latest data archive was not found
+      ansible.builtin.assert:
+        that:
+          - all_data_archives.matched > 0 # Check if any files were matched
+          # Get the latest file by sorting by 'mtime' in reverse and picking the first one.
+          - (all_data_archives.files | sort(attribute="mtime", reverse=true) | first).path is defined
+        fail_msg: "No recent data archive found matching pattern data_*.tgz in {{ backup_root }}"
+      register: fail_if_data_archive_not_found
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: "{{fail_if_data_archive_not_found}}"
+
+    - name: Register artifacts for fetch (primary paths)
+      ansible.builtin.set_fact:
+        primary_backup_package:
+          # Sort the found files by 'mtime' in reverse (newest first) and pick the first one.
+          - "{{ (all_db_dumps.files | sort(attribute='mtime', reverse=true) | first).path }}"
+          - "{{ (all_data_archives.files | sort(attribute='mtime', reverse=true) | first).path }}"
+      tags: always
+
+    - name: Fetch backup artifacts from primary to control node
+      ansible.builtin.fetch:
+        src: "{{ item }}"
+        dest: "{{ control_node_fetch_dir }}"
+        flat: true
+      loop: "{{ primary_backup_package }}"
+      register: fetched_results
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: "{{fetched_results}}"
+
+    - name: Register fetched artifact paths on control node
+      ansible.builtin.set_fact:
+        # --- FIX: Use map filter to correctly extract 'dest' paths ---
+        control_node_backup_package: "{{ fetched_results.results | map(attribute='dest') | list }}"
+        # --- End FIX ---
+      tags: always
+
+    - name: Create compliance report CSV
+      copy:
+        content: |
+          Task Name,Changed,Failed
+          Ensure backup directory exists on primary,{{ backup_dir_exists.changed }},{{ backup_dir_exists.failed }}
+          Dump and compress PostgreSQL database,{{ dump_and_compress_db.changed }},{{ dump_and_compress_db.failed }}
+          Create tarball of application data,{{ create_app_data_tarball.changed }},{{ create_app_data_tarball.failed }}
+          Find all DB dump files,{{ all_db_dumps.changed }},{{ all_db_dumps.failed }}
+          Find all data archive files,{{ all_data_archives.changed }},{{ all_data_archives.failed }}
+          Fail if latest DB dump was not found,{{ fail_if_db_dump_not_found.changed }},{{ fail_if_db_dump_not_found.failed }}
+          Fail if latest data archive was not found,{{ fail_if_data_archive_not_found.changed }},{{ fail_if_data_archive_not_found.failed }}
+          Fetch backup artifacts from primary to control node,{{ fetched_results.changed }},{{ fetched_results.failed }}
+        dest: /tmp/dr_backup_report.csv
+
+###############################################################################
+# PLAY 2 – TRANSFER  (Control Node ➜ DR host)  ➜  copy artifacts off-site
+###############################################################################
+- name: Stage 2 – Transfer (Control Node ➜ DR)
+  hosts: dr # This play directly targets the DR host.
+  become: true # Connects as ansibleuser, then uses sudo for root privileges on dr-server
+  vars:
+    dr_incoming: /srv/dr_incoming
+
+  tasks:
+    - name: Ensure incoming directory exists on DR host
+      # This task now runs directly on the DR host.
+      ansible.builtin.file:
+        path: "{{ dr_incoming }}"
+        state: directory
+        mode: "0750"
+      register: incoming_dir_exists
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: "{{incoming_dir_exists}}"
+
+    - name: Copy backup artifacts from control node to DR host
+      # Copies the files that were fetched to the control node (from primary)
+      # and pushes them to the DR host.
+      # The 'src' path refers to the control node's filesystem.
+      # The 'dest' path refers to the DR host's filesystem.
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "{{ dr_incoming }}/"
+        mode: preserve # Preserves original file permissions
+      # Access the 'control_node_backup_package' fact.
+      # This fact was registered on the 'primary-server' host (or associated with it in Ansible's memory).
+      # Since we only have one 'primary-server' in the 'primary' group, we can access its facts directly.
+      loop: "{{ hostvars[groups['primary'][0]].control_node_backup_package }}"
+      register: copy_artifacts_ctrl_to_dr
+      tags: [transfer]
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: "{{copy_artifacts_ctrl_to_dr}}"
+
+    - name: Create compliance report CSV
+      copy:
+        content: |
+          Task Name,Changed,Failed
+          Ensure incoming directory exists on DR host,{{ incoming_dir_exists.changed }},{{ incoming_dir_exists.failed }}
+          Copy backup artifacts from control node to DR host,{{ copy_artifacts_ctrl_to_dr.changed }},{{ copy_artifacts_ctrl_to_dr.failed }}
+        dest: /tmp/dr_transfer_report.csv
+
+###############################################################################
+# PLAY 3 – RECOVER  (DR site)  ➜  restore when dr_action=failover
+###############################################################################
+- name: Stage 3 – Recover (only when dr_action=failover)
+  hosts: dr
+  become: true
+  vars:
+    # Removed the problematic 'dr_action: "{{ dr_action | default('standby') }}"' definition.
+    # The default will be handled directly in the 'when' condition.
+    incoming_dir: /srv/dr_incoming
+    restore_root: /srv/dr_restore
+    db_name: myapp
+    db_user: postgres
+    db_password: "pass@123" # Assumes db_password will be passed or vaulted
+
+  tasks:
+    - name: Skip unless fail-over requested
+      ansible.builtin.meta: end_play
+      # Apply the default filter directly in the 'when' condition.
+      # If 'dr_action' is not provided (e.g., via --extra-vars), it defaults to 'standby'.
+      when: (dr_action | default('standby')) != 'failover'
+
+    - name: Create restore directory
+      ansible.builtin.file:
+        path: "{{ restore_root }}"
+        state: directory
+        mode: "0750"
+      register: create_restore_dir
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: "{{create_restore_dir}}"
+
+    - name: Find all data archive files on DR
+      ansible.builtin.find:
+        paths: "{{ incoming_dir }}"
+        patterns: "data_*.tgz"
+        file_type: file
+      register: all_data_archives_dr # Distinct variable name for DR host's find results
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: "{{all_data_archives_dr}}"
+
+    - name: Extract latest data archive
+      ansible.builtin.unarchive:
+        src: "{{ (all_data_archives_dr.files | sort(attribute='mtime', reverse=true) | first).path }}" # Sort to get latest
+        dest: "{{ restore_root }}"
+        remote_src: true # Source file is on the remote (DR) host
+      when: all_data_archives_dr.matched > 0
+      register: extract_data_archive
+      tags: [restore, files]
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: extract_data_archive
+      when: all_data_archives_dr.matched > 0
+
+    - name: Find all DB dump files on DR
+      ansible.builtin.find:
+        paths: "{{ incoming_dir }}"
+        patterns: "{{ db_name }}_*.sql.gz"
+        file_type: file
+      register: all_db_dumps_dr # Distinct variable name for DR host's find results
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: all_db_dumps_dr
+
+    - name: Restore PostgreSQL dump
+      ansible.builtin.shell: >
+        bash -c 'gunzip -c "{{ (all_db_dumps_dr.files | sort(attribute="mtime", reverse=true) | first).path }}" |
+                  psql -U {{ db_user }} {{ db_name }}'
+      environment:
+        PGPASSWORD: "{{ db_password }}"
+      when: all_db_dumps_dr.matched > 0
+      changed_when: true
+      register: restore_db_dump
+      tags: [restore, database]
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: restore_db_dump
+      when: all_db_dumps_dr.matched > 0
+
+    - name: Start application service
+      ansible.builtin.systemd:
+        name: myapp
+        state: started
+        enabled: true
+      register: start_app
+      tags: [restore, services]
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: "{{start_app}}"
+
+    - name: Create compliance report CSV
+      copy:
+        content: |
+          Task Name,Changed,Failed
+          Create restore directory,{{ create_restore_dir.changed }},{{ create_restore_dir.failed }}
+          Find all data archive files on DR,{{ all_data_archives_dr.changed }},{{ all_data_archives_dr.failed }}
+          Extract latest data archive,{{ extract_data_archive.changed }},{{ extract_data_archive.failed }}
+          Find all DB dump files on DR,{{ all_db_dumps_dr.changed }},{{ all_db_dumps_dr.failed }}
+          Restore PostgreSQL dump,{{ restore_db_dump.changed }},{{ restore_db_dump.failed }}
+          Start application service,{{ start_app.changed }},{{ start_app.failed }}
+        dest: /tmp/dr_restore_report.csv
+        when: all_data_archives_dr.matched > 0 and all_db_dumps_dr.matched > 0
+
+    - name: Create compliance report CSV
+      copy:
+        content: |
+          Task Name,Changed,Failed
+          Create restore directory,{{ create_restore_dir.changed }},{{ create_restore_dir.failed }}
+          Find all data archive files on DR,{{ all_data_archives_dr.changed }},{{ all_data_archives_dr.failed }}
+          Find all DB dump files on DR,{{ all_db_dumps_dr.changed }},{{ all_db_dumps_dr.failed }}
+          Restore PostgreSQL dump,{{ restore_db_dump.changed }},{{ restore_db_dump.failed }}
+          Start application service,{{ start_app.changed }},{{ start_app.failed }}
+        dest: /tmp/dr_backup_report.csv
+      when: all_data_archives_dr.matched !> 0
+
+    - name: Create compliance report CSV
+      copy:
+        content: |
+          Task Name,Changed,Failed
+          Create restore directory,{{ create_restore_dir.changed }},{{ create_restore_dir.failed }}
+          Find all data archive files on DR,{{ all_data_archives_dr.changed }},{{ all_data_archives_dr.failed }}
+          Extract latest data archive,{{ extract_data_archive.changed }},{{ extract_data_archive.failed }}
+          Find all DB dump files on DR,{{ all_db_dumps_dr.changed }},{{ all_db_dumps_dr.failed }}
+          Start application service,{{ start_app.changed }},{{ start_app.failed }}
+        dest: /tmp/dr_backup_report.csv
+      when: all_db_dumps_dr.matched !> 0
