@@ -39,6 +39,10 @@
         mode: "0750"
       register: backup_dir_exists
 
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: backup_dir_exists
+
     - name: Dump and compress PostgreSQL database
       # Use $(date +%Y%m%d%H%M%S) directly in the shell command for the remote host's timestamp.
       # This ensures the filename matches the actual creation time on the remote host.
@@ -50,6 +54,10 @@
       register: dump_and_compress_db
       tags: [backup, database]
 
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: dump_and_compress_db
+
     - name: Create tarball of application data
       # Use $(date +%Y%m%d%H%M%S) directly in the shell command for the remote host's timestamp.
       ansible.builtin.shell: >
@@ -58,9 +66,9 @@
       register: create_app_data_tarball
       tags: [backup, files]
 
-    - name: Wait 15 seconds for artifacts to settle on disk
-      ansible.builtin.pause:
-        seconds: 15
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: create_app_data_tarball
 
     - name: Find all DB dump files
       ansible.builtin.find:
@@ -70,6 +78,10 @@
         # 'sortby' parameter is for Ansible 2.9+, removed for broader compatibility.
         # Sorting will be done with Jinja2 filters below.
       register: all_db_dumps
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: all_db_dumps
 
     - name: Find all data archive files
       ansible.builtin.find:
@@ -81,9 +93,7 @@
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
-        msg:
-          - "Discovered DB Dumps (unsorted): {{ all_db_dumps.files | map(attribute='path') | list }}"
-          - "Discovered Data Archives (unsorted): {{ all_data_archives.files | map(attribute='path') | list }}"
+        msg: all_data_archives
 
     - name: Fail if latest DB dump was not found
       ansible.builtin.assert:
@@ -94,6 +104,10 @@
         fail_msg: "No recent DB dump found matching pattern {{ db_name }}_*.sql.gz in {{ backup_root }}"
       register: fail_if_db_dump_not_found
 
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: fail_if_db_dump_not_found
+
     - name: Fail if latest data archive was not found
       ansible.builtin.assert:
         that:
@@ -102,6 +116,10 @@
           - (all_data_archives.files | sort(attribute="mtime", reverse=true) | first).path is defined
         fail_msg: "No recent data archive found matching pattern data_*.tgz in {{ backup_root }}"
       register: fail_if_data_archive_not_found
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: fail_if_data_archive_not_found
 
     - name: Register artifacts for fetch (primary paths)
       ansible.builtin.set_fact:
@@ -119,16 +137,16 @@
       loop: "{{ primary_backup_package }}"
       register: fetched_results
 
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: fetched_results
+
     - name: Register fetched artifact paths on control node
       ansible.builtin.set_fact:
         # --- FIX: Use map filter to correctly extract 'dest' paths ---
         control_node_backup_package: "{{ fetched_results.results | map(attribute='dest') | list }}"
         # --- End FIX ---
       tags: always
-
-    - name: DEBUG - Show control_node_backup_package
-      ansible.builtin.debug:
-        var: control_node_backup_package
 
 ###############################################################################
 # PLAY 2 – TRANSFER  (Control Node ➜ DR host)  ➜  copy artifacts off-site
@@ -148,6 +166,10 @@
         mode: "0750"
       register: incoming_dir_exists
 
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: incoming_dir_exists
+
     - name: Copy backup artifacts from control node to DR host
       # Copies the files that were fetched to the control node (from primary)
       # and pushes them to the DR host.
@@ -163,6 +185,10 @@
       loop: "{{ hostvars[groups['primary'][0]].control_node_backup_package }}"
       register: copy_artifacts_ctrl_to_dr
       tags: [transfer]
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: copy_artifacts_ctrl_to_dr
 
 ###############################################################################
 # PLAY 3 – RECOVER  (DR site)  ➜  restore when dr_action=failover
@@ -193,12 +219,20 @@
         mode: "0750"
       register: create_restore_dir
 
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: create_restore_dir
+
     - name: Find all data archive files on DR
       ansible.builtin.find:
         paths: "{{ incoming_dir }}"
         patterns: "data_*.tgz"
         file_type: file
       register: all_data_archives_dr # Distinct variable name for DR host's find results
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: all_data_archives_dr
 
     - name: Extract latest data archive
       ansible.builtin.unarchive:
@@ -209,12 +243,21 @@
       register: extract_data_archive
       tags: [restore, files]
 
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: extract_data_archive
+      when: all_data_archives_dr.matched > 0
+
     - name: Find all DB dump files on DR
       ansible.builtin.find:
         paths: "{{ incoming_dir }}"
         patterns: "{{ db_name }}_*.sql.gz"
         file_type: file
       register: all_db_dumps_dr # Distinct variable name for DR host's find results
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: all_db_dumps_dr
 
     - name: Restore PostgreSQL dump
       ansible.builtin.shell: >
@@ -227,6 +270,11 @@
       register: restore_db_dump
       tags: [restore, database]
 
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: restore_db_dump
+      when: all_db_dumps_dr.matched > 0
+
     - name: Start application service
       ansible.builtin.systemd:
         name: myapp
@@ -234,3 +282,7 @@
         enabled: true
       register: start_app
       tags: [restore, services]
+
+    - name: DEBUG - Show discovered artifact paths (unsorted)
+      ansible.builtin.debug:
+        msg: start_app
