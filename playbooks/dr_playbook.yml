@@ -1,6 +1,7 @@
 ---
 ###############################################################################
-# Disaster-Recovery workflow – WITH PER-TAG CSV REPORTS
+# Disaster-Recovery workflow (Red Hat-supported content)
+#  • Generates per-tag CSV reports for every stage
 ###############################################################################
 
 ###############################################################################
@@ -11,506 +12,287 @@
   become: true
 
   vars:
+    # ————— user parameters ——————————————————————————
     db_name:  myapp
     db_user:  postgres
-    db_password: "pass@123"            # <- vault in production!
+    db_password: "pass@123"           # vault / prompt in prod
     backup_root: /var/backups/dr
     app_data_path: /var/www/myapp
     control_node_fetch_dir: "/tmp/ansible_dr_fetched_backups"
 
-    # ── reporting helpers ────────────────────────────────────────────────
-    _dr_report: {}                                         # tag → [rows]
-    _csv_time: "{{ ansible_date_time.iso8601_basic }}"     # yyyymmddThhmmssZ
+    # ————— reporting helpers ————————————————————————
+    _dr_report: {}                               # tag → list<rows>
+    _csv_time: "{{ ansible_date_time.iso8601_basic }}"
 
   tasks:
-  # ---------------------------------------------------------------------
-  # Backup directory
-  # ---------------------------------------------------------------------
+  # -------------------------------------------------------------------------
+  # Create backup directory
+  # -------------------------------------------------------------------------
   - block:
-      - name: Ensure backup directory exists on primary
+      - name: Ensure backup directory exists
         ansible.builtin.file:
           path: "{{ backup_root }}"
           state: directory
           mode: "0750"
-        register: task_res
+        register: res_backup_dir
         tags: [backup, files]
 
-      - name: Record task result
+      - name: Record result (backup dir)
         ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { item: (_dr_report.get(item, []) + [ {
-                    'task'   : 'Ensure backup directory exists on primary',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res.rc         | default(0),
-                    'changed': task_res.changed    | default(false),
-                    'failed' : task_res.failed     | default(false),
-                    'msg'    : task_res.msg        | default('')
-                } ]) }, recursive=True)
-            }}
+          _dr_report: "{{ _dr_report | combine({
+              item: (_dr_report.get(item, []) + [ {
+                task:  'Ensure backup directory exists',
+                host:  inventory_hostname,
+                rc:    res_backup_dir.rc    | default(0),
+                changed: res_backup_dir.changed | default(false),
+                failed:  res_backup_dir.failed  | default(false),
+                msg:     res_backup_dir.msg     | default('')
+              } ]) }, recursive=True) }}"
         loop: ['backup','files']
-        loop_control: {label: "{{ item }}"}
+        loop_control: { label: "{{ item }}" }
         tags: [always]
 
-  # ---------------------------------------------------------------------
-  # DB dump
-  # ---------------------------------------------------------------------
+  # -------------------------------------------------------------------------
+  # Dump the PostgreSQL DB
+  # -------------------------------------------------------------------------
   - block:
       - name: Dump and compress PostgreSQL database
         ansible.builtin.shell: >
           pg_dump -U {{ db_user }} {{ db_name }} |
           gzip -9 -c > {{ backup_root }}/{{ db_name }}_$(date +%Y%m%d%H%M%S).sql.gz
-        environment:
-          PGPASSWORD: "{{ db_password }}"
+        environment: { PGPASSWORD: "{{ db_password }}" }
         changed_when: true
-        register: task_res
+        register: res_dump_db
         tags: [backup, database]
 
-      - name: Record task result
+      - name: Record result (DB dump)
         ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { item: (_dr_report.get(item, []) + [ {
-                    'task'   : 'Dump and compress PostgreSQL database',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res.rc         | default(0),
-                    'changed': task_res.changed    | default(false),
-                    'failed' : task_res.failed     | default(false),
-                    'msg'    : task_res.msg        | default('')
-                } ]) }, recursive=True)
-            }}
+          _dr_report: "{{ _dr_report | combine({
+              item: (_dr_report.get(item, []) + [ {
+                task:  'Dump PostgreSQL DB',
+                host:  inventory_hostname,
+                rc:    res_dump_db.rc       | default(0),
+                changed: res_dump_db.changed| default(false),
+                failed:  res_dump_db.failed | default(false),
+                msg:     res_dump_db.msg    | default('')
+              } ]) }, recursive=True) }}"
         loop: ['backup','database']
-        loop_control: {label: "{{ item }}"}
+        loop_control: { label: "{{ item }}" }
         tags: [always]
 
-  # ---------------------------------------------------------------------
-  # Tarball of app data
-  # ---------------------------------------------------------------------
+  # -------------------------------------------------------------------------
+  # Tarball application data
+  # -------------------------------------------------------------------------
   - block:
       - name: Create tarball of application data
         ansible.builtin.shell: >
-          tar --create --gzip --file {{ backup_root }}/data_$(date +%Y%m%d%H%M%S).tgz -C {{ app_data_path }} .
+          tar -czf {{ backup_root }}/data_$(date +%Y%m%d%H%M%S).tgz -C {{ app_data_path }} .
         changed_when: true
-        register: task_res
+        register: res_tarball
         tags: [backup, files]
 
-      - name: Record task result
+      - name: Record result (tarball)
         ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { item: (_dr_report.get(item, []) + [ {
-                    'task'   : 'Create tarball of application data',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res.rc         | default(0),
-                    'changed': task_res.changed    | default(false),
-                    'failed' : task_res.failed     | default(false),
-                    'msg'    : task_res.msg        | default('')
-                } ]) }, recursive=True)
-            }}
+          _dr_report: "{{ _dr_report | combine({
+              item: (_dr_report.get(item, []) + [ {
+                task:  'Create data tarball',
+                host:  inventory_hostname,
+                rc:    res_tarball.rc       | default(0),
+                changed: res_tarball.changed| default(false),
+                failed:  res_tarball.failed | default(false),
+                msg:     res_tarball.msg    | default('')
+              } ]) }, recursive=True) }}"
         loop: ['backup','files']
-        loop_control: {label: "{{ item }}"}
+        loop_control: { label: "{{ item }}" }
         tags: [always]
 
-  # ---------------------------------------------------------------------
-  # Pause (settle)
-  # ---------------------------------------------------------------------
-  - block:
-      - name: Wait 15 seconds for artifacts to settle on disk
-        ansible.builtin.pause:
-          seconds: 15
-        register: task_res
-        tags: [misc]
+  # -------------------------------------------------------------------------
+  # Pause for disk flush
+  # -------------------------------------------------------------------------
+  - pause:
+      seconds: 15
+    register: res_pause
+    tags: [misc]
 
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { 'misc': (_dr_report.get('misc', []) + [ {
-                    'task'   : 'Pause 15 seconds',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res.rc         | default(0),
-                    'changed': task_res.changed    | default(false),
-                    'failed' : task_res.failed     | default(false),
-                    'msg'    : ''
-                } ]) }, recursive=True)
-            }}
-        tags: [always]
+  - ansible.builtin.set_fact:
+      _dr_report: "{{ _dr_report | combine({
+          'misc': (_dr_report.get('misc', []) + [ {
+            task: 'Pause 15 s',
+            host: inventory_hostname,
+            rc:   0,
+            changed: false,
+            failed: false,
+            msg:  ''
+          } ]) }, recursive=True) }}"
+    tags: [always]
 
-  # ---------------------------------------------------------------------
-  # Find DB dumps
-  # ---------------------------------------------------------------------
-  - block:
-      - name: Find all DB dump files
-        ansible.builtin.find:
-          paths: "{{ backup_root }}"
-          patterns: "{{ db_name }}_*.sql.gz"
-          file_type: file
-        register: task_res
-        tags: [backup, database]
+  # -------------------------------------------------------------------------
+  # Locate newest DB dump & data tar
+  # -------------------------------------------------------------------------
+  - name: Find DB dump files
+    ansible.builtin.find:
+      paths: "{{ backup_root }}"
+      patterns: "{{ db_name }}_*.sql.gz"
+      file_type: file
+    register: find_db_dumps
+    tags: [backup, database]
 
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { item: (_dr_report.get(item, []) + [ {
-                    'task'   : 'Find DB dump files',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res.rc         | default(0),
-                    'changed': task_res.changed    | default(false),
-                    'failed' : task_res.failed     | default(false),
-                    'msg'    : 'matched=' ~ task_res.matched
-                } ]) }, recursive=True)
-            }}
-        loop: ['backup','database']
-        loop_control: {label: "{{ item }}"}
-        tags: [always]
+  - name: Find data archive files
+    ansible.builtin.find:
+      paths: "{{ backup_root }}"
+      patterns: "data_*.tgz"
+      file_type: file
+    register: find_data_archives
+    tags: [backup, files]
 
-  # ---------------------------------------------------------------------
-  # Find data archives
-  # ---------------------------------------------------------------------
-  - block:
-      - name: Find all data archive files
-        ansible.builtin.find:
-          paths: "{{ backup_root }}"
-          patterns: "data_*.tgz"
-          file_type: file
-        register: task_res
-        tags: [backup, files]
+  - name: Assert we have at least one DB dump
+    ansible.builtin.assert:
+      that: find_db_dumps.matched > 0
+    tags: [backup, database]
 
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { item: (_dr_report.get(item, []) + [ {
-                    'task'   : 'Find data archive files',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res.rc         | default(0),
-                    'changed': task_res.changed    | default(false),
-                    'failed' : task_res.failed     | default(false),
-                    'msg'    : 'matched=' ~ task_res.matched
-                } ]) }, recursive=True)
-            }}
-        loop: ['backup','files']
-        loop_control: {label: "{{ item }}"}
-        tags: [always]
+  - name: Assert we have at least one data archive
+    ansible.builtin.assert:
+      that: find_data_archives.matched > 0
+    tags: [backup, files]
 
-  # ---------------------------------------------------------------------
-  # DEBUG discovered artifacts
-  # ---------------------------------------------------------------------
-  - block:
-      - name: DEBUG – show discovered artifact paths
-        ansible.builtin.debug:
-          msg:
-            - "DB dumps:   {{ task_res_db.files   | map(attribute='path') | list | default([]) }}"
-            - "Data tgz:   {{ task_res_data.files | map(attribute='path') | list | default([]) }}"
-        register: task_res
-        vars:
-          task_res_db: "{{ hostvars[inventory_hostname]['task_res'] }}"
-          task_res_data: "{{ hostvars[inventory_hostname]['task_res'] }}"
-        tags: [misc]
+  # -------------------------------------------------------------------------
+  # Register latest artifacts and fetch them
+  # -------------------------------------------------------------------------
+  - name: Set primary_backup_package fact
+    ansible.builtin.set_fact:
+      primary_backup_package:
+        - "{{ (find_db_dumps.files     | sort(attribute='mtime', reverse=true) | first).path }}"
+        - "{{ (find_data_archives.files| sort(attribute='mtime', reverse=true) | first).path }}"
+    tags: [backup]
 
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { 'misc': (_dr_report.get('misc', []) + [ {
-                    'task'   : 'DEBUG discovered artifacts',
-                    'host'   : inventory_hostname,
-                    'rc'     : 0,
-                    'changed': false,
-                    'failed' : false,
-                    'msg'    : 'debug output written'
-                } ]) }, recursive=True)
-            }}
-        tags: [always]
+  - name: Fetch artifacts to control node
+    ansible.builtin.fetch:
+      src:  "{{ item }}"
+      dest: "{{ control_node_fetch_dir }}"
+      flat: true
+    loop: "{{ primary_backup_package }}"
+    register: res_fetch
+    tags: [backup]
 
-  # ---------------------------------------------------------------------
-  # Assertions
-  # ---------------------------------------------------------------------
-  - block:
-      - name: Fail if latest DB dump was not found
-        ansible.builtin.assert:
-          that:
-            - task_res_db.matched > 0
-        register: task_res
-        tags: [backup, database]
+  - name: Set control_node_backup_package fact
+    ansible.builtin.set_fact:
+      control_node_backup_package: "{{ res_fetch.results | map(attribute='dest') | list }}"
+    tags: [backup]
 
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { item: (_dr_report.get(item, []) + [ {
-                    'task'   : 'Assert latest DB dump exists',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res.rc | default(0),
-                    'changed': task_res.changed | default(false),
-                    'failed' : task_res.failed | default(false),
-                    'msg'    : task_res.msg | default('')
-                } ]) }, recursive=True)
-            }}
-        loop: ['backup','database']
-        loop_control: {label: "{{ item }}"}
-        tags: [always]
+  # -------------------------------------------------------------------------
+  # Record results of the find/assert/fetch steps
+  # -------------------------------------------------------------------------
+  - name: Record results of locate & fetch
+    ansible.builtin.set_fact:
+      _dr_report: "{{ _dr_report | combine({
+        'backup': _dr_report.backup | default([])
+                  + [
+                      { task: 'Find DB dumps', host: inventory_hostname, rc: 0,
+                        changed: false, failed: false,
+                        msg: 'matched=' ~ find_db_dumps.matched },
+                      { task: 'Find data archives', host: inventory_hostname, rc: 0,
+                        changed: false, failed: false,
+                        msg: 'matched=' ~ find_data_archives.matched },
+                      { task: 'Fetch artifacts', host: inventory_hostname, rc: res_fetch.rc | default(0),
+                        changed: res_fetch.changed | default(false),
+                        failed: res_fetch.failed  | default(false),
+                        msg: 'files fetched=' ~ (res_fetch.results | length) }
+                    ]
+      }, recursive=True) }}"
+    tags: [always]
 
-  - block:
-      - name: Fail if latest data archive was not found
-        ansible.builtin.assert:
-          that:
-            - task_res_data.matched > 0
-        register: task_res
-        tags: [backup, files]
-
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { item: (_dr_report.get(item, []) + [ {
-                    'task'   : 'Assert latest data archive exists',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res.rc | default(0),
-                    'changed': task_res.changed | default(false),
-                    'failed' : task_res.failed | default(false),
-                    'msg'    : task_res.msg | default('')
-                } ]) }, recursive=True)
-            }}
-        loop: ['backup','files']
-        loop_control: {label: "{{ item }}"}
-        tags: [always]
-
-  # ---------------------------------------------------------------------
-  # Set-fact: primary_backup_package
-  # ---------------------------------------------------------------------
-  - block:
-      - name: Register artifacts for fetch (primary paths)
-        ansible.builtin.set_fact:
-          primary_backup_package:
-            - "{{ (task_res_db.files   | sort(attribute='mtime', reverse=true) | first).path }}"
-            - "{{ (task_res_data.files | sort(attribute='mtime', reverse=true) | first).path }}"
-        register: task_res
-        tags: [backup]
-
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { 'backup': (_dr_report.get('backup', []) + [ {
-                    'task'   : 'Register primary_backup_package',
-                    'host'   : inventory_hostname,
-                    'rc'     : 0,
-                    'changed': task_res.changed | default(false),
-                    'failed' : false,
-                    'msg'    : 'package registered'
-                } ]) }, recursive=True)
-            }}
-        tags: [always]
-
-  # ---------------------------------------------------------------------
-  # Fetch artifacts
-  # ---------------------------------------------------------------------
-  - block:
-      - name: Fetch backup artifacts from primary to control node
-        ansible.builtin.fetch:
-          src: "{{ item }}"
-          dest: "{{ control_node_fetch_dir }}"
-          flat: true
-        loop: "{{ primary_backup_package }}"
-        register: task_res
-        tags: [backup]
-
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { 'backup': (_dr_report.get('backup', []) + [ {
-                    'task'   : 'Fetch backup artifacts',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res.rc | default(0),
-                    'changed': task_res.changed | default(false),
-                    'failed' : task_res.failed | default(false),
-                    'msg'    : 'files fetched=' ~ (task_res.results | length)
-                } ]) }, recursive=True)
-            }}
-        tags: [always]
-
-  # ---------------------------------------------------------------------
-  # Set-fact: control_node_backup_package
-  # ---------------------------------------------------------------------
-  - block:
-      - name: Register fetched artifact paths on control node
-        ansible.builtin.set_fact:
-          control_node_backup_package: "{{ task_res.results | map(attribute='dest') | list }}"
-        register: task_res
-        tags: [backup]
-
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { 'backup': (_dr_report.get('backup', []) + [ {
-                    'task'   : 'Register control_node_backup_package',
-                    'host'   : inventory_hostname,
-                    'rc'     : 0,
-                    'changed': task_res.changed | default(false),
-                    'failed' : false,
-                    'msg'    : 'package registered'
-                } ]) }, recursive=True)
-            }}
-        tags: [always]
-
-  # ---------------------------------------------------------------------
-  # DEBUG: show control_node_backup_package
-  # ---------------------------------------------------------------------
-  - block:
-      - name: DEBUG – control_node_backup_package
-        ansible.builtin.debug:
-          var: control_node_backup_package
-        register: task_res
-        tags: [misc]
-
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { 'misc': (_dr_report.get('misc', []) + [ {
-                    'task'   : 'DEBUG control_node_backup_package',
-                    'host'   : inventory_hostname,
-                    'rc'     : 0,
-                    'changed': false,
-                    'failed' : false,
-                    'msg'    : 'debug printed'
-                } ]) }, recursive=True)
-            }}
-        tags: [always]
-
-  # ───────────────────────────────────────────────────────────────────────────
-  # GENERATE CSVs  (one per tag) – runs ONCE on control node
-  # ───────────────────────────────────────────────────────────────────────────
-  - name: Generate CSV reports for Protect stage
+  # -------------------------------------------------------------------------
+  # Generate CSVs for Protect stage
+  # -------------------------------------------------------------------------
+  - name: Create CSVs for Protect stage
     delegate_to: localhost
     run_once: true
     vars:
       report_items: "{{ _dr_report | dict2items }}"
     loop: "{{ report_items }}"
-    loop_control: {label: "{{ item.key }}"}
+    loop_control: { label: "{{ item.key }}" }
     ansible.builtin.copy:
       dest: "/tmp/protect_{{ item.key }}_report_{{ _csv_time }}.csv"
-      mode: "0644"
       content: |
         Task,Host,ReturnCode,Changed,Failed,Message
         {% for r in item.value %}
-        "{{ r.task }}",{{ r.host }},{{ r.rc }},{{ r.changed }},{{ r.failed }},{{ r.msg | replace('\n',' ') }}
+        "{{ r.task }}",{{ r.host }},{{ r.rc }},{{ r.changed }},
+        {{ r.failed }},{{ r.msg | replace('\n',' ') }}
         {% endfor %}
+      mode: "0644"
     tags: [always]
 
 ###############################################################################
-# PLAY 2 – TRANSFER  (control ➜ DR host)  ➜  copy artifacts off-site
+# PLAY 2 – TRANSFER  (control ➜ DR)  ➜  copy artifacts off-site
 ###############################################################################
-- name: Stage 2 – Transfer (Control Node → DR)
+- name: Stage 2 – Transfer (Control → DR)
   hosts: dr
   become: true
 
   vars:
     dr_incoming: /srv/dr_incoming
-
-    # reporting helpers
     _dr_report: {}
     _csv_time: "{{ ansible_date_time.iso8601_basic }}"
 
   tasks:
-  # ---------------------------------------------------------------------
-  # Incoming dir
-  # ---------------------------------------------------------------------
-  - block:
-      - name: Ensure incoming directory exists on DR host
-        ansible.builtin.file:
-          path: "{{ dr_incoming }}"
-          state: directory
-          mode: "0750"
-        register: task_res
-        tags: [transfer]
+  - name: Ensure incoming directory exists
+    ansible.builtin.file:
+      path: "{{ dr_incoming }}"
+      state: directory
+      mode: "0750"
+    register: res_in_dir
+    tags: [transfer]
 
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { 'transfer': (_dr_report.get('transfer', []) + [ {
-                    'task'   : 'Ensure dr_incoming exists',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res.rc | default(0),
-                    'changed': task_res.changed | default(false),
-                    'failed' : task_res.failed | default(false),
-                    'msg'    : task_res.msg | default('')
-                } ]) }, recursive=True)
-            }}
-        tags: [always]
+  - name: Copy artifacts from control node to DR
+    ansible.builtin.copy:
+      src:  "{{ item }}"
+      dest: "{{ dr_incoming }}/"
+      mode: preserve
+    loop: "{{ hostvars[groups['primary'][0]].control_node_backup_package }}"
+    register: res_copy
+    tags: [transfer]
 
-  # ---------------------------------------------------------------------
-  # Copy artifacts
-  # ---------------------------------------------------------------------
-  - block:
-      - name: Copy backup artifacts from control node to DR host
-        ansible.builtin.copy:
-          src: "{{ item }}"
-          dest: "{{ dr_incoming }}/"
-          mode: preserve
-        loop: "{{ hostvars[groups['primary'][0]].control_node_backup_package }}"
-        register: task_res
-        tags: [transfer]
+  # record
+  - ansible.builtin.set_fact:
+      _dr_report: "{{ _dr_report | combine({
+        'transfer': [
+          { task: 'Ensure dr_incoming', host: inventory_hostname,
+            rc: res_in_dir.rc | default(0),
+            changed: res_in_dir.changed | default(false),
+            failed: res_in_dir.failed  | default(false),
+            msg: res_in_dir.msg | default('') },
+          { task: 'Copy artifacts to DR', host: inventory_hostname,
+            rc: res_copy.rc | default(0),
+            changed: res_copy.changed | default(false),
+            failed: res_copy.failed  | default(false),
+            msg: 'files copied=' ~ (res_copy.results | length) }
+        ]
+      }) }}"
+    tags: [always]
 
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { 'transfer': (_dr_report.get('transfer', []) + [ {
-                    'task'   : 'Copy artifacts to DR',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res.rc | default(0),
-                    'changed': task_res.changed | default(false),
-                    'failed' : task_res.failed | default(false),
-                    'msg'    : 'files copied=' ~ (task_res.results | length)
-                } ]) }, recursive=True)
-            }}
-        tags: [always]
-
-  # ───────────────────────────────────────────────────────────────────────────
-  # CSVs for Transfer stage
-  # ───────────────────────────────────────────────────────────────────────────
-  - name: Generate CSV reports for Transfer stage
+  # CSV
+  - name: CSVs for Transfer stage
     delegate_to: localhost
     run_once: true
     vars:
       report_items: "{{ _dr_report | dict2items }}"
     loop: "{{ report_items }}"
-    loop_control: {label: "{{ item.key }}"}
+    loop_control: { label: "{{ item.key }}" }
     ansible.builtin.copy:
       dest: "/tmp/transfer_{{ item.key }}_report_{{ _csv_time }}.csv"
       mode: "0644"
       content: |
         Task,Host,ReturnCode,Changed,Failed,Message
         {% for r in item.value %}
-        "{{ r.task }}",{{ r.host }},{{ r.rc }},{{ r.changed }},{{ r.failed }},{{ r.msg | replace('\n',' ') }}
+        "{{ r.task }}",{{ r.host }},{{ r.rc }},{{ r.changed }},
+        {{ r.failed }},{{ r.msg | replace('\n',' ') }}
         {% endfor %}
     tags: [always]
 
 ###############################################################################
-# PLAY 3 – RECOVER  (DR site)  ➜  restore when dr_action=failover
+# PLAY 3 – RECOVER  (DR site) ➜ restore when dr_action=failover
 ###############################################################################
-- name: Stage 3 – Recover (DR site – only when dr_action=failover)
+- name: Stage 3 – Recover (DR site)
   hosts: dr
   become: true
 
@@ -520,240 +302,118 @@
     db_name:  myapp
     db_user:  postgres
     db_password: "pass@123"
-
     _dr_report: {}
     _csv_time: "{{ ansible_date_time.iso8601_basic }}"
 
   tasks:
-  # ---------------------------------------------------------------------
-  # Skip unless failover
-  # ---------------------------------------------------------------------
-  - block:
-      - name: End play unless failover requested
-        ansible.builtin.meta: end_play
-        when: (dr_action | default('standby')) != 'failover'
-        register: task_res
-        tags: [restore]
+  - name: End play unless failover requested
+    ansible.builtin.meta: end_play
+    when: (dr_action | default('standby')) != 'failover'
 
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { 'restore': (_dr_report.get('restore', []) + [ {
-                    'task'   : 'Check dr_action',
-                    'host'   : inventory_hostname,
-                    'rc'     : 0,
-                    'changed': false,
-                    'failed' : false,
-                    'msg'    : 'No failover requested'
-                } ]) }, recursive=True)
-            }}
-        when: (dr_action | default('standby')) != 'failover'
-        tags: [always]
+  - name: Create restore directory
+    ansible.builtin.file:
+      path: "{{ restore_root }}"
+      state: directory
+      mode: "0750"
+    register: res_restore_dir
+    tags: [restore, files]
 
-  # ---------------------------------------------------------------------
-  # Create restore directory
-  # ---------------------------------------------------------------------
-  - block:
-      - name: Create restore directory
-        ansible.builtin.file:
-          path: "{{ restore_root }}"
-          state: directory
-          mode: "0750"
-        register: task_res
-        tags: [restore, files]
+  # --- locate archives ---
+  - name: Find data archives on DR
+    ansible.builtin.find:
+      paths: "{{ incoming_dir }}"
+      patterns: "data_*.tgz"
+      file_type: file
+    register: find_data_archives_dr
+    tags: [restore, files]
 
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { item: (_dr_report.get(item, []) + [ {
-                    'task'   : 'Create restore directory',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res.rc | default(0),
-                    'changed': task_res.changed | default(false),
-                    'failed' : task_res.failed | default(false),
-                    'msg'    : task_res.msg | default('')
-                } ]) }, recursive=True)
-            }}
-        loop: ['restore','files']
-        loop_control: {label: "{{ item }}"}
-        tags: [always]
+  - name: Find DB dumps on DR
+    ansible.builtin.find:
+      paths: "{{ incoming_dir }}"
+      patterns: "{{ db_name }}_*.sql.gz"
+      file_type: file
+    register: find_db_dumps_dr
+    tags: [restore, database]
 
-  # ---------------------------------------------------------------------
-  # Find data tgz
-  # ---------------------------------------------------------------------
-  - block:
-      - name: Find all data archive files on DR
-        ansible.builtin.find:
-          paths: "{{ incoming_dir }}"
-          patterns: "data_*.tgz"
-          file_type: file
-        register: task_res
-        tags: [restore, files]
+  # --- extract ---
+  - name: Extract latest data archive
+    ansible.builtin.unarchive:
+      src: "{{ (find_data_archives_dr.files | sort(attribute='mtime', reverse=true) | first).path }}"
+      dest: "{{ restore_root }}"
+      remote_src: true
+    when: find_data_archives_dr.matched > 0
+    register: res_extract
+    tags: [restore, files]
 
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { item: (_dr_report.get(item, []) + [ {
-                    'task'   : 'Find data archive files (DR)',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res.rc | default(0),
-                    'changed': task_res.changed | default(false),
-                    'failed' : task_res.failed | default(false),
-                    'msg'    : 'matched=' ~ task_res.matched
-                } ]) }, recursive=True)
-            }}
-        loop: ['restore','files']
-        loop_control: {label: "{{ item }}"}
-        tags: [always]
+  # --- restore DB ---
+  - name: Restore PostgreSQL dump
+    ansible.builtin.shell: >
+      bash -c 'gunzip -c "{{ (find_db_dumps_dr.files | sort(attribute="mtime", reverse=true) | first).path }}" |
+               psql -U {{ db_user }} {{ db_name }}'
+    environment: { PGPASSWORD: "{{ db_password }}" }
+    when: find_db_dumps_dr.matched > 0
+    changed_when: true
+    register: res_restore_db
+    tags: [restore, database]
 
-  # ---------------------------------------------------------------------
-  # Extract latest data tgz
-  # ---------------------------------------------------------------------
-  - block:
-      - name: Extract latest data archive
-        ansible.builtin.unarchive:
-          src: "{{ (task_res.files | sort(attribute='mtime', reverse=true) | first).path }}"
-          dest: "{{ restore_root }}"
-          remote_src: true
-        when: task_res.matched > 0
-        register: task_res_extract
-        tags: [restore, files]
+  # --- start app ---
+  - name: Start application service
+    ansible.builtin.systemd:
+      name: myapp
+      state: started
+      enabled: true
+    register: res_service
+    tags: [restore, services]
 
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { item: (_dr_report.get(item, []) + [ {
-                    'task'   : 'Extract latest data archive',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res_extract.rc | default(0),
-                    'changed': task_res_extract.changed | default(false),
-                    'failed' : task_res_extract.failed | default(false),
-                    'msg'    : task_res_extract.msg | default('')
-                } ]) }, recursive=True)
-            }}
-        loop: ['restore','files']
-        loop_control: {label: "{{ item }}"}
-        when: task_res.matched > 0
-        tags: [always]
+  # record
+  - ansible.builtin.set_fact:
+      _dr_report: "{{ _dr_report | combine({
+        'restore': [
+          { task: 'Create restore dir', host: inventory_hostname,
+            rc: res_restore_dir.rc | default(0),
+            changed: res_restore_dir.changed | default(false),
+            failed: res_restore_dir.failed | default(false),
+            msg: res_restore_dir.msg | default('') },
+          { task: 'Find data archives', host: inventory_hostname,
+            rc: 0, changed: false, failed: false,
+            msg: 'matched=' ~ find_data_archives_dr.matched },
+          { task: 'Find DB dumps', host: inventory_hostname,
+            rc: 0, changed: false, failed: false,
+            msg: 'matched=' ~ find_db_dumps_dr.matched },
+          { task: 'Extract data archive', host: inventory_hostname,
+            rc: res_extract.rc | default(0),
+            changed: res_extract.changed | default(false),
+            failed: res_extract.failed | default(false),
+            msg: res_extract.msg | default('') },
+          { task: 'Restore DB dump', host: inventory_hostname,
+            rc: res_restore_db.rc | default(0),
+            changed: res_restore_db.changed | default(false),
+            failed: res_restore_db.failed | default(false),
+            msg: res_restore_db.msg | default('') },
+          { task: 'Start app service', host: inventory_hostname,
+            rc: res_service.rc | default(0),
+            changed: res_service.changed | default(false),
+            failed: res_service.failed | default(false),
+            msg: res_service.msg | default('') }
+        ]
+      }) }}"
+    tags: [always]
 
-  # ---------------------------------------------------------------------
-  # Find DB dumps on DR
-  # ---------------------------------------------------------------------
-  - block:
-      - name: Find all DB dump files on DR
-        ansible.builtin.find:
-          paths: "{{ incoming_dir }}"
-          patterns: "{{ db_name }}_*.sql.gz"
-          file_type: file
-        register: task_res
-        tags: [restore, database]
-
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { item: (_dr_report.get(item, []) + [ {
-                    'task'   : 'Find DB dumps (DR)',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res.rc | default(0),
-                    'changed': task_res.changed | default(false),
-                    'failed' : task_res.failed | default(false),
-                    'msg'    : 'matched=' ~ task_res.matched
-                } ]) }, recursive=True)
-            }}
-        loop: ['restore','database']
-        loop_control: {label: "{{ item }}"}
-        tags: [always]
-
-  # ---------------------------------------------------------------------
-  # Restore DB
-  # ---------------------------------------------------------------------
-  - block:
-      - name: Restore PostgreSQL dump
-        ansible.builtin.shell: >
-          bash -c 'gunzip -c "{{ (task_res.files | sort(attribute="mtime", reverse=true) | first).path }}" |
-                   psql -U {{ db_user }} {{ db_name }}'
-        environment:
-          PGPASSWORD: "{{ db_password }}"
-        when: task_res.matched > 0
-        changed_when: true
-        register: task_res_restore
-        tags: [restore, database]
-
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { item: (_dr_report.get(item, []) + [ {
-                    'task'   : 'Restore PostgreSQL dump',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res_restore.rc | default(0),
-                    'changed': task_res_restore.changed | default(false),
-                    'failed' : task_res_restore.failed | default(false),
-                    'msg'    : task_res_restore.msg | default('')
-                } ]) }, recursive=True)
-            }}
-        loop: ['restore','database']
-        loop_control: {label: "{{ item }}"}
-        when: task_res.matched > 0
-        tags: [always]
-
-  # ---------------------------------------------------------------------
-  # Start application service
-  # ---------------------------------------------------------------------
-  - block:
-      - name: Start application service
-        ansible.builtin.systemd:
-          name: myapp
-          state: started
-          enabled: true
-        register: task_res
-        tags: [restore, services]
-
-      - name: Record task result
-        ansible.builtin.set_fact:
-          _dr_report: >-
-            {{
-              _dr_report | combine(
-                { item: (_dr_report.get(item, []) + [ {
-                    'task'   : 'Start application service',
-                    'host'   : inventory_hostname,
-                    'rc'     : task_res.rc | default(0),
-                    'changed': task_res.changed | default(false),
-                    'failed' : task_res.failed | default(false),
-                    'msg'    : task_res.msg | default('')
-                } ]) }, recursive=True)
-            }}
-        loop: ['restore','services']
-        loop_control: {label: "{{ item }}"}
-        tags: [always]
-
-  # ───────────────────────────────────────────────────────────────────────────
-  # CSVs for Recover stage
-  # ───────────────────────────────────────────────────────────────────────────
-  - name: Generate CSV reports for Recover stage
+  # CSV
+  - name: CSVs for Recover stage
     delegate_to: localhost
     run_once: true
     vars:
       report_items: "{{ _dr_report | dict2items }}"
     loop: "{{ report_items }}"
-    loop_control: {label: "{{ item.key }}"}
+    loop_control: { label: "{{ item.key }}" }
     ansible.builtin.copy:
       dest: "/tmp/recover_{{ item.key }}_report_{{ _csv_time }}.csv"
       mode: "0644"
       content: |
         Task,Host,ReturnCode,Changed,Failed,Message
         {% for r in item.value %}
-        "{{ r.task }}",{{ r.host }},{{ r.rc }},{{ r.changed }},{{ r.failed }},{{ r.msg | replace('\n',' ') }}
+        "{{ r.task }}",{{ r.host }},{{ r.rc }},{{ r.changed }},
+        {{ r.failed }},{{ r.msg | replace('\n',' ') }}
         {% endfor %}
     tags: [always]
