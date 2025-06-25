@@ -159,7 +159,7 @@
           Find all data archive files,{{ all_data_archives.changed }},{{ all_data_archives.failed }}
           Fail if latest DB dump was not found,{{ fail_if_db_dump_not_found.changed }},{{ fail_if_db_dump_not_found.failed }}
           Fail if latest data archive was not found,{{ fail_if_data_archive_not_found.changed }},{{ fail_if_data_archive_not_found.failed }}
-          Fetch backup artifacts from primary to control node,{{ fetched_results.changed }},{{ fetched_results.failed }}
+          Fetch backup artifacts from primary to control node,{{ fetched_results.changed }},{{ fetched_results.skipped }}
         dest: /tmp/dr_backup_report.csv
 
 ###############################################################################
@@ -209,7 +209,7 @@
         content: |
           Task Name,Changed,Failed
           Ensure incoming directory exists on DR host,{{ incoming_dir_exists.changed }},{{ incoming_dir_exists.failed }}
-          Copy backup artifacts from control node to DR host,{{ copy_artifacts_ctrl_to_dr.changed }},{{ copy_artifacts_ctrl_to_dr.failed }}
+          Copy backup artifacts from control node to DR host,{{ copy_artifacts_ctrl_to_dr.changed }},{{ copy_artifacts_ctrl_to_dr.skipped }}
         dest: /tmp/dr_transfer_report.csv
 
 ###############################################################################
@@ -315,33 +315,5 @@
           Task Name,Changed,Failed
           Create restore directory,{{ create_restore_dir.changed }},{{ create_restore_dir.failed }}
           Find all data archive files on DR,{{ all_data_archives_dr.changed }},{{ all_data_archives_dr.failed }}
-          Extract latest data archive,{{ extract_data_archive.changed }},{{ extract_data_archive.failed }}
-          Find all DB dump files on DR,{{ all_db_dumps_dr.changed }},{{ all_db_dumps_dr.failed }}
-          Restore PostgreSQL dump,{{ restore_db_dump.changed }},{{ restore_db_dump.failed }}
           Start application service,{{ start_app.changed }},{{ start_app.failed }}
         dest: /tmp/dr_restore_report.csv
-        when: all_data_archives_dr.matched > 0 and all_db_dumps_dr.matched > 0
-
-    - name: Create compliance report CSV
-      copy:
-        content: |
-          Task Name,Changed,Failed
-          Create restore directory,{{ create_restore_dir.changed }},{{ create_restore_dir.failed }}
-          Find all data archive files on DR,{{ all_data_archives_dr.changed }},{{ all_data_archives_dr.failed }}
-          Find all DB dump files on DR,{{ all_db_dumps_dr.changed }},{{ all_db_dumps_dr.failed }}
-          Restore PostgreSQL dump,{{ restore_db_dump.changed }},{{ restore_db_dump.failed }}
-          Start application service,{{ start_app.changed }},{{ start_app.failed }}
-        dest: /tmp/dr_backup_report.csv
-      when: all_data_archives_dr.matched !> 0
-
-    - name: Create compliance report CSV
-      copy:
-        content: |
-          Task Name,Changed,Failed
-          Create restore directory,{{ create_restore_dir.changed }},{{ create_restore_dir.failed }}
-          Find all data archive files on DR,{{ all_data_archives_dr.changed }},{{ all_data_archives_dr.failed }}
-          Extract latest data archive,{{ extract_data_archive.changed }},{{ extract_data_archive.failed }}
-          Find all DB dump files on DR,{{ all_db_dumps_dr.changed }},{{ all_db_dumps_dr.failed }}
-          Start application service,{{ start_app.changed }},{{ start_app.failed }}
-        dest: /tmp/dr_backup_report.csv
-      when: all_db_dumps_dr.matched !> 0
