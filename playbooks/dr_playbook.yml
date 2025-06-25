@@ -41,7 +41,7 @@
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
-        msg: backup_dir_exists
+        msg: "{{backup_dir_exists}}"
 
     - name: Dump and compress PostgreSQL database
       # Use $(date +%Y%m%d%H%M%S) directly in the shell command for the remote host's timestamp.
@@ -56,7 +56,7 @@
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
-        msg: dump_and_compress_db
+        msg: "{{dump_and_compress_db}}"
 
     - name: Create tarball of application data
       # Use $(date +%Y%m%d%H%M%S) directly in the shell command for the remote host's timestamp.
@@ -68,7 +68,7 @@
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
-        msg: create_app_data_tarball
+        msg: "{{create_app_data_tarball}}"
 
     - name: Find all DB dump files
       ansible.builtin.find:
@@ -81,7 +81,7 @@
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
-        msg: all_db_dumps
+        msg: "{{all_db_dumps}}"
 
     - name: Find all data archive files
       ansible.builtin.find:
@@ -93,7 +93,7 @@
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
-        msg: all_data_archives
+        msg: "{{all_data_archives}}"
 
     - name: Fail if latest DB dump was not found
       ansible.builtin.assert:
@@ -106,7 +106,7 @@
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
-        msg: fail_if_db_dump_not_found
+        msg: "{{fail_if_db_dump_not_found}}"
 
     - name: Fail if latest data archive was not found
       ansible.builtin.assert:
@@ -119,7 +119,7 @@
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
-        msg: fail_if_data_archive_not_found
+        msg: "{{fail_if_data_archive_not_found}}"
 
     - name: Register artifacts for fetch (primary paths)
       ansible.builtin.set_fact:
@@ -139,7 +139,7 @@
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
-        msg: fetched_results
+        msg: "{{fetched_results}}"
 
     - name: Register fetched artifact paths on control node
       ansible.builtin.set_fact:
@@ -168,7 +168,7 @@
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
-        msg: incoming_dir_exists
+        msg: "{{incoming_dir_exists}}"
 
     - name: Copy backup artifacts from control node to DR host
       # Copies the files that were fetched to the control node (from primary)
@@ -188,7 +188,7 @@
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
-        msg: copy_artifacts_ctrl_to_dr
+        msg: "{{copy_artifacts_ctrl_to_dr}}"
 
 ###############################################################################
 # PLAY 3 – RECOVER  (DR site)  ➜  restore when dr_action=failover
@@ -221,7 +221,7 @@
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
-        msg: create_restore_dir
+        msg: "{{create_restore_dir}}"
 
     - name: Find all data archive files on DR
       ansible.builtin.find:
@@ -232,7 +232,7 @@
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
-        msg: all_data_archives_dr
+        msg: "{{all_data_archives_dr}}"
 
     - name: Extract latest data archive
       ansible.builtin.unarchive:
@@ -253,7 +253,7 @@
         paths: "{{ incoming_dir }}"
         patterns: "{{ db_name }}_*.sql.gz"
         file_type: file
-      register: all_db_dumps_dr # Distinct variable name for DR host's find results
+      register: "{{all_db_dumps_dr}}" # Distinct variable name for DR host's find results
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
@@ -285,4 +285,4 @@
 
     - name: DEBUG - Show discovered artifact paths (unsorted)
       ansible.builtin.debug:
-        msg: start_app
+        msg: "{{start_app}}"
