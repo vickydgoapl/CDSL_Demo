@@ -215,11 +215,10 @@
         --subject "Automated Report"
         --body "Hello Team,\n\nPlease find today’s report attached.\n\nRegards,\nAAP"
         --file "/tmp/dr_backup_report.csv"
-      no_log: true
 
     - name: deleting emailer
       file:
-        path: "/tmp/dr_backup_report.csv"
+        path: "/tmp/send_email.py"
         state: absent
 
 ###############################################################################
@@ -322,12 +321,11 @@
         --to "vicky.deshpande@goapl.com"
         --subject "Automated Report"
         --body "Hello Team,\n\nPlease find today’s report attached.\n\nRegards,\nAAP"
-        --file "/tmp/dr_backup_report.csv"
-      no_log: true
+        --file "/tmp/dr_transfer_report.csv"
 
     - name: deleting emailer
       file:
-        path: "/tmp/dr_backup_report.csv"
+        path: "/tmp/send_email.py"
         state: absent
 
 
@@ -488,12 +486,11 @@
         --to "vicky.deshpande@goapl.com"
         --subject "Automated Report"
         --body "Hello Team,\n\nPlease find today’s report attached.\n\nRegards,\nAAP"
-        --file "/tmp/dr_backup_report.csv"
-      no_log: true
+        --file "/tmp/dr_restore_report.csv"
 
     - name: deleting emailer
       file:
-        path: "/tmp/dr_backup_report.csv"
+        path: "/tmp/send_email.py"
         state: absent
 
 
