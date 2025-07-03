@@ -32,6 +32,8 @@
     backup_root: /var/backups/dr
     app_data_path: /var/www/myapp
     control_node_fetch_dir: "/tmp/ansible_dr_fetched_backups" # Directory on the Ansible Control Node
+    gmail_user: "vickydgoapl@gmail.com"
+    gmail_pass: "@lphA786"
 
   tasks:
     - name: Ensure backup directory exists on primary
@@ -164,26 +166,59 @@
           Fetch backup artifacts from primary to control node,{{ fetched_results.changed }},{{ fetched_results.skipped }}
         dest: /tmp/dr_backup_report.csv
     
-    - name: Send report file via Gmail
-      community.general.mail:
-        host: smtp.gmail.com
-        port: 587
-        secure: starttls
-        username: "vickydgoapl@gmail.com"
-        password: "@lphA786"
-        to: "vicky.deshpande@goapl.com"
-        subject: "Your requested dr backup automation report"
-        body: |
-            Hello,
+    - name: Copy email helper script
+      ansible.builtin.copy:
+        dest: /tmp/send_email.py
+        mode: '0755'
+        content: |
+          #!/usr/bin/env python3
+          import smtplib, argparse
+          from email.mime.multipart import MIMEMultipart
+          from email.mime.text import MIMEText
+          from email.mime.base import MIMEBase
+          from email import encoders
 
-            Please find the attached report.
+          p = argparse.ArgumentParser()
+          for arg in ['smtp','port','user','pass','to','subject','body','file']:
+              p.add_argument('--'+arg, required=True)
+          args = p.parse_args()
 
-            Regards,
-            Ansible Automation
-        attachments:
-          - "/tmp/dr_backup_report.csv"
+          msg = MIMEMultipart()
+          msg['From'], msg['To'], msg['Subject'] = args.user, args.to, args.subject
+          msg.attach(MIMEText(args.body, 'plain'))
+
+          part = MIMEBase('application','octet-stream')
+          with open(args.file,'rb') as f: part.set_payload(f.read())
+          encoders.encode_base64(part)
+          part.add_header('Content-Disposition',
+                          f'attachment; filename=\"{args.file.split(\"/\")[-1]}\"')
+          msg.attach(part)
+
+          s = smtplib.SMTP(args.smtp, int(args.port))
+          s.starttls()
+          s.login(args.user, args.pass)
+          s.send_message(msg)
+          s.quit()
       delegate_to: localhost
 
+    - name: Send email using helper
+      ansible.builtin.command: >
+        python3 /tmp/send_email.py
+        --smtp smtp.gmail.com --port 587
+        --user "{{ gmail_user }}"
+        --pass "{{ gmail_pass }}"
+        --to "vicky.deshpande@goapl.com"
+        --subject "Automated Report"
+        --body "Hello Team,\n\nPlease find today’s report attached.\n\nRegards,\nAAP"
+        --file "/tmp/dr_backup_report.csv"
+      no_log: true
+      delegate_to: localhost
+
+    - name: deleting emailer
+      file:
+        path: "/tmp/dr_backup_report.csv"
+        state: absent
+      delegate_to: localhost
 
 ###############################################################################
 # PLAY 2 – TRANSFER  (Control Node ➜ DR host)  ➜  copy artifacts off-site
@@ -237,24 +272,58 @@
           Copy backup artifacts from control node to DR host,{{ copy_artifacts_ctrl_to_dr.changed }},{{ copy_artifacts_ctrl_to_dr.skipped }}
         dest: /tmp/dr_transfer_report.csv
     
-    - name: Send report file via Gmail
-      community.general.mail:
-        host: smtp.gmail.com
-        port: 587
-        secure: starttls
-        username: "vickydgoapl@gmail.com"
-        password: "@lphA786"
-        to: "vicky.deshpande@goapl.com"
-        subject: "Your requested dr transfer automation report"
-        body: |
-            Hello,
+    - name: Copy email helper script
+      ansible.builtin.copy:
+        dest: /tmp/send_email.py
+        mode: '0755'
+        content: |
+          #!/usr/bin/env python3
+          import smtplib, argparse
+          from email.mime.multipart import MIMEMultipart
+          from email.mime.text import MIMEText
+          from email.mime.base import MIMEBase
+          from email import encoders
 
-            Please find the attached report.
+          p = argparse.ArgumentParser()
+          for arg in ['smtp','port','user','pass','to','subject','body','file']:
+              p.add_argument('--'+arg, required=True)
+          args = p.parse_args()
 
-            Regards,
-            Ansible Automation
-        attachments:
-          - "/tmp/dr_transfer_report.csv"
+          msg = MIMEMultipart()
+          msg['From'], msg['To'], msg['Subject'] = args.user, args.to, args.subject
+          msg.attach(MIMEText(args.body, 'plain'))
+
+          part = MIMEBase('application','octet-stream')
+          with open(args.file,'rb') as f: part.set_payload(f.read())
+          encoders.encode_base64(part)
+          part.add_header('Content-Disposition',
+                          f'attachment; filename=\"{args.file.split(\"/\")[-1]}\"')
+          msg.attach(part)
+
+          s = smtplib.SMTP(args.smtp, int(args.port))
+          s.starttls()
+          s.login(args.user, args.pass)
+          s.send_message(msg)
+          s.quit()
+      delegate_to: localhost
+
+    - name: Send email using helper
+      ansible.builtin.command: >
+        python3 /tmp/send_email.py
+        --smtp smtp.gmail.com --port 587
+        --user "{{ gmail_user }}"
+        --pass "{{ gmail_pass }}"
+        --to "vicky.deshpande@goapl.com"
+        --subject "Automated Report"
+        --body "Hello Team,\n\nPlease find today’s report attached.\n\nRegards,\nAAP"
+        --file "/tmp/dr_backup_report.csv"
+      no_log: true
+      delegate_to: localhost
+
+    - name: deleting emailer
+      file:
+        path: "/tmp/dr_backup_report.csv"
+        state: absent
       delegate_to: localhost
 
 
@@ -367,24 +436,58 @@
           Start application service,{{ start_app.changed }},{{ start_app.failed }}
         dest: /tmp/dr_restore_report.csv
     
-    - name: Send report file via Gmail
-      community.general.mail:
-        host: smtp.gmail.com
-        port: 587
-        secure: starttls
-        username: "vickydgoapl@gmail.com"
-        password: "@lphA786"
-        to: "vicky.deshpande@goapl.com"
-        subject: "Your requested dr restore automation report"
-        body: |
-            Hello,
+    - name: Copy email helper script
+      ansible.builtin.copy:
+        dest: /tmp/send_email.py
+        mode: '0755'
+        content: |
+          #!/usr/bin/env python3
+          import smtplib, argparse
+          from email.mime.multipart import MIMEMultipart
+          from email.mime.text import MIMEText
+          from email.mime.base import MIMEBase
+          from email import encoders
 
-            Please find the attached report.
+          p = argparse.ArgumentParser()
+          for arg in ['smtp','port','user','pass','to','subject','body','file']:
+              p.add_argument('--'+arg, required=True)
+          args = p.parse_args()
 
-            Regards,
-            Ansible Automation
-        attachments:
-          - "/tmp/dr_restore_report.csv"
+          msg = MIMEMultipart()
+          msg['From'], msg['To'], msg['Subject'] = args.user, args.to, args.subject
+          msg.attach(MIMEText(args.body, 'plain'))
+
+          part = MIMEBase('application','octet-stream')
+          with open(args.file,'rb') as f: part.set_payload(f.read())
+          encoders.encode_base64(part)
+          part.add_header('Content-Disposition',
+                          f'attachment; filename=\"{args.file.split(\"/\")[-1]}\"')
+          msg.attach(part)
+
+          s = smtplib.SMTP(args.smtp, int(args.port))
+          s.starttls()
+          s.login(args.user, args.pass)
+          s.send_message(msg)
+          s.quit()
+      delegate_to: localhost
+
+    - name: Send email using helper
+      ansible.builtin.command: >
+        python3 /tmp/send_email.py
+        --smtp smtp.gmail.com --port 587
+        --user "{{ gmail_user }}"
+        --pass "{{ gmail_pass }}"
+        --to "vicky.deshpande@goapl.com"
+        --subject "Automated Report"
+        --body "Hello Team,\n\nPlease find today’s report attached.\n\nRegards,\nAAP"
+        --file "/tmp/dr_backup_report.csv"
+      no_log: true
+      delegate_to: localhost
+
+    - name: deleting emailer
+      file:
+        path: "/tmp/dr_backup_report.csv"
+        state: absent
       delegate_to: localhost
 
 
