@@ -196,7 +196,7 @@
           with open(args.file,'rb') as f: part.set_payload(f.read())
           encoders.encode_base64(part)
           part.add_header('Content-Disposition',
-                          f'attachment; filename="{args.file.split(\"/\")[-1]}"')
+                          f`attachment; filename="{args.file.split('/')[-1]}"`)
           msg.attach(part)
 
           s = smtplib.SMTP(args.smtp, int(args.port))
