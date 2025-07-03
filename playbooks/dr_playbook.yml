@@ -161,6 +161,27 @@
           Fail if latest data archive was not found,{{ fail_if_data_archive_not_found.changed }},{{ fail_if_data_archive_not_found.failed }}
           Fetch backup artifacts from primary to control node,{{ fetched_results.changed }},{{ fetched_results.skipped }}
         dest: /tmp/dr_backup_report.csv
+    
+    - name: Send report file via Gmail
+      ansible.builtin.mail:
+        host: smtp.gmail.com
+        port: 587
+        secure: starttls
+        username: "vickydgoapl@gmail.com"
+        password: "@lphA786"
+        to: "vicky.deshpande@goapl.com"
+        subject: "Your requested dr backup automation report"
+        body: |
+            Hello,
+
+            Please find the attached report.
+
+            Regards,
+            Ansible Automation
+        attachments:
+          - "/tmp/dr_backup_report.csv"
+      delegate_to: localhost
+
 
 ###############################################################################
 # PLAY 2 – TRANSFER  (Control Node ➜ DR host)  ➜  copy artifacts off-site
@@ -211,6 +232,28 @@
           Ensure incoming directory exists on DR host,{{ incoming_dir_exists.changed }},{{ incoming_dir_exists.failed }}
           Copy backup artifacts from control node to DR host,{{ copy_artifacts_ctrl_to_dr.changed }},{{ copy_artifacts_ctrl_to_dr.skipped }}
         dest: /tmp/dr_transfer_report.csv
+    
+    - name: Send report file via Gmail
+      ansible.builtin.mail:
+        host: smtp.gmail.com
+        port: 587
+        secure: starttls
+        username: "vickydgoapl@gmail.com"
+        password: "@lphA786"
+        to: "vicky.deshpande@goapl.com"
+        subject: "Your requested dr transfer automation report"
+        body: |
+            Hello,
+
+            Please find the attached report.
+
+            Regards,
+            Ansible Automation
+        attachments:
+          - "/tmp/dr_transfer_report.csv"
+      delegate_to: localhost
+
+
 
 ###############################################################################
 # PLAY 3 – RECOVER  (DR site)  ➜  restore when dr_action=failover
@@ -317,3 +360,25 @@
           Find all data archive files on DR,{{ all_data_archives_dr.changed }},{{ all_data_archives_dr.failed }}
           Start application service,{{ start_app.changed }},{{ start_app.failed }}
         dest: /tmp/dr_restore_report.csv
+    
+    - name: Send report file via Gmail
+      ansible.builtin.mail:
+        host: smtp.gmail.com
+        port: 587
+        secure: starttls
+        username: "vickydgoapl@gmail.com"
+        password: "@lphA786"
+        to: "vicky.deshpande@goapl.com"
+        subject: "Your requested dr restore automation report"
+        body: |
+            Hello,
+
+            Please find the attached report.
+
+            Regards,
+            Ansible Automation
+        attachments:
+          - "/tmp/dr_restore_report.csv"
+      delegate_to: localhost
+
+
