@@ -194,9 +194,10 @@
 
           part = MIMEBase('application','octet-stream')
           with open(args.file,'rb') as f: part.set_payload(f.read())
+          fname = args.file.split('/')[-1]
           encoders.encode_base64(part)
           part.add_header('Content-Disposition',
-                          f`attachment; filename="{args.file.split('/')[-1]}"`)
+                          f'attachment; filename="{fname}"')
           msg.attach(part)
 
           s = smtplib.SMTP(args.smtp, int(args.port))
