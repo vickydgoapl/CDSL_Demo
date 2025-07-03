@@ -33,7 +33,7 @@
     app_data_path: /var/www/myapp
     control_node_fetch_dir: "/tmp/ansible_dr_fetched_backups" # Directory on the Ansible Control Node
     gmail_user: "vickydgoapl@gmail.com"
-    gmail_pass: "@lphA786"
+    gmail_pass: "vhsyebxmbptqhycx"
 
   tasks:
     - name: Ensure backup directory exists on primary
