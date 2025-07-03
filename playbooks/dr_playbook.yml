@@ -166,6 +166,11 @@
           Fetch backup artifacts from primary to control node,{{ fetched_results.changed }},{{ fetched_results.skipped }}
         dest: /tmp/dr_backup_report.csv
     
+    - name: Install Python3 on control node if missing
+      ansible.builtin.package:
+        name: python3
+        state: present
+    
     - name: Copy email helper script
       ansible.builtin.copy:
         dest: /tmp/send_email.py
@@ -199,7 +204,6 @@
           s.login(args.user, args.pass)
           s.send_message(msg)
           s.quit()
-      delegate_to: localhost
 
     - name: Send email using helper
       ansible.builtin.command: >
@@ -212,13 +216,11 @@
         --body "Hello Team,\n\nPlease find today’s report attached.\n\nRegards,\nAAP"
         --file "/tmp/dr_backup_report.csv"
       no_log: true
-      delegate_to: localhost
 
     - name: deleting emailer
       file:
         path: "/tmp/dr_backup_report.csv"
         state: absent
-      delegate_to: localhost
 
 ###############################################################################
 # PLAY 2 – TRANSFER  (Control Node ➜ DR host)  ➜  copy artifacts off-site
@@ -272,6 +274,11 @@
           Copy backup artifacts from control node to DR host,{{ copy_artifacts_ctrl_to_dr.changed }},{{ copy_artifacts_ctrl_to_dr.skipped }}
         dest: /tmp/dr_transfer_report.csv
     
+    - name: Install Python3 on control node if missing
+      ansible.builtin.package:
+        name: python3
+        state: present
+    
     - name: Copy email helper script
       ansible.builtin.copy:
         dest: /tmp/send_email.py
@@ -305,7 +312,6 @@
           s.login(args.user, args.pass)
           s.send_message(msg)
           s.quit()
-      delegate_to: localhost
 
     - name: Send email using helper
       ansible.builtin.command: >
@@ -318,13 +324,11 @@
         --body "Hello Team,\n\nPlease find today’s report attached.\n\nRegards,\nAAP"
         --file "/tmp/dr_backup_report.csv"
       no_log: true
-      delegate_to: localhost
 
     - name: deleting emailer
       file:
         path: "/tmp/dr_backup_report.csv"
         state: absent
-      delegate_to: localhost
 
 
 
@@ -436,6 +440,11 @@
           Start application service,{{ start_app.changed }},{{ start_app.failed }}
         dest: /tmp/dr_restore_report.csv
     
+    - name: Install Python3 on control node if missing
+      ansible.builtin.package:
+        name: python3
+        state: present
+    
     - name: Copy email helper script
       ansible.builtin.copy:
         dest: /tmp/send_email.py
@@ -469,7 +478,6 @@
           s.login(args.user, args.pass)
           s.send_message(msg)
           s.quit()
-      delegate_to: localhost
 
     - name: Send email using helper
       ansible.builtin.command: >
@@ -482,12 +490,10 @@
         --body "Hello Team,\n\nPlease find today’s report attached.\n\nRegards,\nAAP"
         --file "/tmp/dr_backup_report.csv"
       no_log: true
-      delegate_to: localhost
 
     - name: deleting emailer
       file:
         path: "/tmp/dr_backup_report.csv"
         state: absent
-      delegate_to: localhost
 
 
