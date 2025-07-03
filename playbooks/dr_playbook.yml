@@ -9,6 +9,8 @@
 - name: Stage 1 – Protect (Primary site)
   hosts: primary
   become: true # Connects as ansibleuser, then uses sudo for root privileges on primary-server
+  collections:
+    - community.general
   vars:
     # Removed current_timestamp variable here.
     # Filenames will now be generated dynamically on the remote host.
@@ -163,7 +165,7 @@
         dest: /tmp/dr_backup_report.csv
     
     - name: Send report file via Gmail
-      ansible.builtin.mail:
+      community.general.mail:
         host: smtp.gmail.com
         port: 587
         secure: starttls
@@ -189,6 +191,8 @@
 - name: Stage 2 – Transfer (Control Node ➜ DR)
   hosts: dr # This play directly targets the DR host.
   become: true # Connects as ansibleuser, then uses sudo for root privileges on dr-server
+  collections:
+    - community.general
   vars:
     dr_incoming: /srv/dr_incoming
 
@@ -234,7 +238,7 @@
         dest: /tmp/dr_transfer_report.csv
     
     - name: Send report file via Gmail
-      ansible.builtin.mail:
+      community.general.mail:
         host: smtp.gmail.com
         port: 587
         secure: starttls
@@ -261,6 +265,8 @@
 - name: Stage 3 – Recover (only when dr_action=failover)
   hosts: dr
   become: true
+  collections:
+    - community.general
   vars:
     # Removed the problematic 'dr_action: "{{ dr_action | default('standby') }}"' definition.
     # The default will be handled directly in the 'when' condition.
@@ -362,7 +368,7 @@
         dest: /tmp/dr_restore_report.csv
     
     - name: Send report file via Gmail
-      ansible.builtin.mail:
+      community.general.mail:
         host: smtp.gmail.com
         port: 587
         secure: starttls
