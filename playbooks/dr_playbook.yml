@@ -184,7 +184,7 @@
           from email import encoders
 
           p = argparse.ArgumentParser()
-          for arg in ['smtp','port','user','pass','to','subject','body','file']:
+          for arg in ['smtp','port','user','passwd','to','subject','body','file']:
               p.add_argument('--'+arg, required=True)
           args = p.parse_args()
 
@@ -202,7 +202,7 @@
 
           s = smtplib.SMTP(args.smtp, int(args.port))
           s.starttls()
-          s.login(args.user, args.pass)
+          s.login(args.user, args.passwd)
           s.send_message(msg)
           s.quit()
 
@@ -211,7 +211,7 @@
         python3 /tmp/send_email.py
         --smtp smtp.gmail.com --port 587
         --user "{{ gmail_user }}"
-        --pass "{{ gmail_pass }}"
+        --passwd "{{ gmail_pass }}"
         --to "vicky.deshpande@goapl.com"
         --subject "Automated Report"
         --body "Hello Team,\n\nPlease find today’s report attached.\n\nRegards,\nAAP"
